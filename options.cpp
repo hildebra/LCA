@@ -16,23 +16,27 @@ void self_help() {
 	cout << "  -r taxonomy file with entries corresponding to sequences in ref database, that was mapped against\n";
 	cout << "  -o output file containing the sequence name and the assigned taxonomy against the ref database\n";
 	cout << "Optional arguments:\n";
-	cout << "  -matHigh       calculate abundance of reads at different taxonomic levels. An extra file (derriving from -o) per tax level is written\n";
-	cout << "  -showHitRead   if a hit can be uniquely assigned to a single entry in the ref database, this is reported in the -o file.\n";
-	cout << "  -no_bl_filter  use only, if custom scripts were used to pre-filter filter -i file and in-built filter should be deactivated\n";
+	cout << "  -matHigh           calculate abundance of reads at different taxonomic levels. An extra file (derriving from -o) per tax level is written\n";
+	cout << "  -showHitRead       if a hit can be uniquely assigned to a single entry in the ref database, this is reported in the -o file.\n";
+	cout << "  -no_bl_filter      use only, if custom scripts were used to pre-filter filter -i file and in-built filter should be deactivated\n";
 	//useless and deactivated
 	//cout << "  -annotateAll (gives back an annotation for every single read/otu\n";
-	cout << "  -readInput     [miTag / OTU] changes the tags attached to single reads\n";
-	cout << "  -LCAfrac       [0-1] the fraction of matching taxonomies required to accept this taxonomy on the different levels. Default=\"0.8\"\n";
-//	cout << "  -t             number of threads to use, currently deactivated on linux as it requires C++11\n";
-	cout << "  -id            comma seperated list of min %identity, to accept a database hit as applicable to this taxonomic level, starting from Species and going to Kingdom. Default=\"97,95,93,91,88,78,0\"\n";
-	cout << "  -cover         [0-1] fraction of query coverage required to accept a hit. Default=0.5\n";
+	cout << "  -readInput         Are the inputs miTags? Default: off (assummes OTUs) \n";
+	cout << "  -LCAfrac           [0-1] the fraction of matching taxonomies required to accept this taxonomy on the different levels. Default=\"0.8\"\n";
+	cout << "  -t                 [int] number of threads to use\n";
+	cout << "  -id                [int,] comma seperated list of min %identity, to accept a database hit as applicable to this taxonomic level, starting from Species and going to Kingdom. Default=\"97,95,93,91,88,78,0\"\n";
+	cout << "  -cover             [0-1] fraction of query coverage required to accept a hit. Default=0.5\n";
+	cout << "  -minAlignLen       [int] min num basepairs of hit to accept reported hit. Default=\"75\"\n";
+	cout << "  -SLVfmt            is the .tax file in the native Silva format? (Note that Silve tax formats might differ between versions..). Default: off\n";
+	cout << "  -annotateAll       Annotate all hits, even if qual criteria are not met? Default: off\n";
+	cout << "  -reportHitPattern  [file] Write a report of best search hits to reproduce Grant et al. (2023) hit patterns for LCA search \n";
 	cout << endl;
 	exit(0);
 }
 
 
 options::options(int argc, char **argv,int defDep):
-	RefTaxFile(""), blastres(""), outF(""), input_format("bl8"),
+	RefTaxFile(""), blastres(""), outF(""), input_format("bl8"), repHitPattern(""),
 	BLfilter(true), calcHighMats(false), hitRD(false), isReads(false),
 	annotateAll(false), nativeSlVdb(false), reportID(false), checkTaxoUnkw(true),
 	numThr(1), taxDepth(defDep), LCAfract(0.9f), minCover(0.5f), minAliLen(75), idThr(defDep,0),
@@ -75,6 +79,8 @@ options::options(int argc, char **argv,int defDep):
 			reportBestHit = true;
 		else if (!strcmp(argv[i], "-SLVfmt"))
 			nativeSlVdb = true;
+		else if (!strcmp(argv[i], "-reportHitPattern"))
+			repHitPattern = argv[++i];
 		else if (!strcmp(argv[i], "-annotateAll"))
 			annotateAll = true;
 		else if (!strcmp(argv[i], "-t"))

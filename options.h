@@ -16,6 +16,7 @@ public:
 	//vars
 	string RefTaxFile, blastres, outF;
 	string input_format;//bl8 , uc
+	string repHitPattern; //KSGP style blast id hit report
 	bool BLfilter;     //do my own blast filter before LCA
 	bool calcHighMats; //calculate phylum etc level sum
 	bool hitRD; //show the database entry that was hit, in hiera file

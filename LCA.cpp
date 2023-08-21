@@ -5,7 +5,7 @@
 #include "LCAimpl.h"
 #include "Matrix.h"
 //0.24: fixed bug of not reading "k__?; p__?; c__?; .." strings
-const char* LCA_ver = "0.24";
+const char* LCA_ver = "0.25";
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";
@@ -40,6 +40,7 @@ int main(int argc, char* argv[])
 	string blastres = argv[1];
 	string outF = argv[3];*/
 	int numThr = OPT->numThr;
+	
 	bool highLvl(OPT->calcHighMats);
 
 	//and prep potential higher level mat (vector based, no samples are separated)
@@ -62,6 +63,13 @@ int main(int argc, char* argv[])
 	if (OPT->hitRD) { O << "\tHit2DB"; }
 	if (OPT->reportID) { O << "\t%ID"; }
 	O << endl;// Domain\tPhylum\tClass\tOrder\tFamily\tGenus\tSpecies\tOTU\n";
+
+	ofstream HITPAT; bool checkHitPat = false;
+	if (OPT->repHitPattern != "") {
+		checkHitPat = true;
+		HITPAT = ofstream(OPT->repHitPattern.c_str());
+		HITPAT << "OTU/ASV\tID\tTaxDepth\n";
+	}
 
 
 	//some stats
@@ -99,6 +107,10 @@ int main(int argc, char* argv[])
 #else
 				TaxObj* tmp = sCore[ti];
 #endif			
+				//store the percID, if requested
+				if (checkHitPat) {
+					HITPAT<< tmp->Subj<<"\t"<< tmp->perID<< "\t"<< tmp->depth << endl;
+				}
 				if (!multiDBuse){	//and write the tax out
 					O << (tmp)->Subj << "\t" << (tmp)->getWriteString(OPT->idThr) << endl;
 					Taxwritten++;
@@ -162,6 +174,9 @@ int main(int argc, char* argv[])
 		//into file now
 	}
 	O.close();
+	if (checkHitPat) {
+		HITPAT.close();
+	}
 	TaxRead--;
 	//clean up
 	cout << "Wrote " << Taxwritten << "/" << TaxRead << " LCA tax assignments\n";
