@@ -158,6 +158,7 @@ tlevels(tdep,"")
 		} else {//not good: tax is double annotated
 			//cerr << "Tax ID: " << ID << " is double used!\n";
 			//exit(930);
+           delete t;
 			TaxDbl++;
 		}
 	}
@@ -283,6 +284,17 @@ lastBlast(NULL), allRead(false), inptFmt(-1){
 		inptFmt = 1;
 	}
 
+}
+
+BlastReader::~BlastReader() {
+	if (lastBlast != NULL) {
+		delete lastBlast;
+		lastBlast = NULL;
+	}
+	if (blast != NULL) {
+		delete blast;
+		blast = NULL;
+	}
 }
 
 list<BlastRes*> BlastReader::getResBatch() {

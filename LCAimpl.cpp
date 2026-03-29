@@ -25,6 +25,7 @@ TaxObj* LCA(list<BlastRes*> BR, RefTax* RT, options* opt) {
 	TaxObj* ret = LCAcore(allTax,singularHit,opt->LCAfract,opt->taxDepth) ;
 	ret->setRepID(opt->reportID);
 	ret->Subj = (*BR.begin())->Query;
+	ret->perID = avgPerID;
 
 	if (opt->hitRD ){
 		ret->addHitDB((*BR.begin())->Sbj);
@@ -37,8 +38,6 @@ TaxObj* LCA(list<BlastRes*> BR, RefTax* RT, options* opt) {
 			ret->addHitDB(__unkwnTax);
 		}*/
 	}
-	ret->perID = avgPerID;
-
 	
 /*	if (allTax.size() > 1) {
 		int ii = 0;

@@ -16,7 +16,10 @@ struct TaxObj
 	void setRepID(bool x) { repID = x; }
 	void makeSpeciesUnknown() { if (speciesUncertain) { SavedTaxs[SavedTaxs.size() - 1] = __unkwnTax; } }
 	//get tax at depth x
-	string& get(int x) { if (x > depth) {  return __unkwnTax; } return SavedTaxs[x]; }
+  string& get(int x) {
+		if (x < 0 || x >= depth || x >= (int)SavedTaxs.size()) { return __unkwnTax; }
+		return SavedTaxs[x];
+	}
 	void set(int x, string v) { 
 		if (x < (int)SavedTaxs.size()) { SavedTaxs[x] = v; } 
 		if (x > depth) { depth = x; }
@@ -76,7 +79,7 @@ class BlastReader
 {
 public:
 	BlastReader(const string&, const string&);
-	~BlastReader() {  }
+ ~BlastReader();
 	list<BlastRes*> getResBatch();
 private:
 

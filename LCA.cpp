@@ -5,7 +5,8 @@
 #include "LCAimpl.h"
 #include "Matrix.h"
 //0.24: fixed bug of not reading "k__?; p__?; c__?; .." strings
-const char* LCA_ver = "0.25";
+//0.26: 28.3.26: fixed various smallish bugs, including wrongly reported %id in some cases, and some parallelization issues. 
+const char* LCA_ver = "0.26";
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";
@@ -40,6 +41,7 @@ int main(int argc, char* argv[])
 	string blastres = argv[1];
 	string outF = argv[3];*/
 	int numThr = OPT->numThr;
+	const size_t refDbCount = OPT->refDBs.size();
 	
 	bool highLvl(OPT->calcHighMats);
 
@@ -100,12 +102,21 @@ int main(int argc, char* argv[])
 			if (allRead && ti_end == ti) {//no more blast results
 				cout << "Done Blast File reading\n"; break;
 			}
-			if (burninDone && sCore[ti] != NULL) {
+          bool workerHasResult = false;
+			if (burninDone) {
+#ifdef parallel
+				workerHasResult = parvec[ti].valid();
+#else
+				workerHasResult = (sCore[ti] != NULL);
+#endif
+			}
+			if (workerHasResult) {
 				//assigns.push_back(parvec[ti].get());
 #ifdef parallel
 				TaxObj* tmp = parvec[ti].get();
 #else
 				TaxObj* tmp = sCore[ti];
+                sCore[ti] = NULL;
 #endif			
 				//store the percID, if requested
 				if (checkHitPat) {
@@ -181,14 +192,17 @@ int main(int argc, char* argv[])
 	//clean up
 	cout << "Wrote " << Taxwritten << "/" << TaxRead << " LCA tax assignments\n";
 
-	if (highLvl) {
+  if (highLvl) {
 		mat->writeAllLevels(OPT->outF);
 	}
-	delete mat; delete OPT;
 
 	if (dblSbj>0) {
-		cout << "Found " << dblSbj << " double subject sequences in "<< OPT->refDBs.size()<<", reassigned " << replSbjTax << " of these." << endl;
+      cout << "Found " << dblSbj << " double subject sequences in "<< refDbCount <<", reassigned " << replSbjTax << " of these." << endl;
 	}
+   delete mat; delete OPT;
+#ifdef parallel
+	delete[] parvec;
+#endif
 	printf("LCA finished. Time taken: %.2fs\n", (double)(clock() - tStart) / CLOCKS_PER_SEC);
 
 

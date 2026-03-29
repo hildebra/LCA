@@ -46,21 +46,28 @@ options::options(int argc, char **argv,int defDep):
 	idThr[5] = 95; idThr[6] = 97;
 
 	bool newIDthrs = false; string newIDthStr("");
+	auto requireValue = [&](int& idx, const char* optName) -> const char* {
+		if (idx + 1 >= argc) {
+			cerr << "Missing value for option " << optName << "\n";
+			exit(6);
+		}
+		return argv[++idx];
+	};
 
 	for (int i = 1; i < argc; i++)
 	{
 		if (!strcmp(argv[i], "-i"))
-			blastres = argv[++i];
+           blastres = requireValue(i, "-i");
 		else if (!strcmp(argv[i], "-h"))
 			self_help();
 		else if (!strcmp(argv[i], "-r"))
-			RefTaxFile = argv[++i];
+         RefTaxFile = requireValue(i, "-r");
 		else if (!strcmp(argv[i], "-f"))//input format
-			input_format = argv[++i];
+           input_format = requireValue(i, "-f");
 		else if (!strcmp(argv[i], "-v"))
 			version = true;
 		else if (!strcmp(argv[i], "-o"))
-			outF = argv[++i];
+           outF = requireValue(i, "-o");
 		else if (!strcmp(argv[i], "-matHigh"))
 			calcHighMats = true;
 		else if (!strcmp(argv[i], "-showHitRead"))
@@ -72,7 +79,7 @@ options::options(int argc, char **argv,int defDep):
 		else if (!strcmp(argv[i], "-readInput"))
 			isReads = true;
 		else if (!strcmp(argv[i], "-minAlignLen"))
-			minAliLen = atof(argv[++i]);		
+            minAliLen = atof(requireValue(i, "-minAlignLen"));		
 		else if (!strcmp(argv[i], "-reportID"))
 			reportID = true;
 		else if (!strcmp(argv[i], "-reportBestHit"))
@@ -80,17 +87,17 @@ options::options(int argc, char **argv,int defDep):
 		else if (!strcmp(argv[i], "-SLVfmt"))
 			nativeSlVdb = true;
 		else if (!strcmp(argv[i], "-reportHitPattern"))
-			repHitPattern = argv[++i];
+          repHitPattern = requireValue(i, "-reportHitPattern");
 		else if (!strcmp(argv[i], "-annotateAll"))
 			annotateAll = true;
 		else if (!strcmp(argv[i], "-t"))
-			numThr = atoi(argv[++i]);
+           numThr = atoi(requireValue(i, "-t"));
 		else if (!strcmp(argv[i], "-cover"))
-			minCover = atof(argv[++i]);
+         minCover = atof(requireValue(i, "-cover"));
 		else if (!strcmp(argv[i], "-LCAfrac"))
-			LCAfract = atof(argv[++i]);
+         LCAfract = atof(requireValue(i, "-LCAfrac"));
 		else if (!strcmp(argv[i], "-id")) {
-			newIDthrs = true; newIDthStr= argv[++i];
+            newIDthrs = true; newIDthStr = requireValue(i, "-id");
 		}
 
 	}
