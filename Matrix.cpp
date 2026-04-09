@@ -16,7 +16,7 @@ Matrix::~Matrix()
 void Matrix::add(TaxObj* t) {
 	string addStr("");// t->get(0));
 	for (size_t DL = 0; DL < rowIDs.size(); DL++) {
-		string curT = t->get(DL);
+       string curT = t->get(static_cast<int>(DL));
 		if (curT == __unkwnTax) {curT = __unkwnTaxWR;}
 		if (DL == 0) {
 			addStr += curT;

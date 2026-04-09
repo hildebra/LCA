@@ -9,25 +9,32 @@ struct TaxObj
 {
 	TaxObj(const string&, int, bool nativeSLV, bool doNotCheckTax);
 	TaxObj(TaxObj*t);
-	TaxObj(int d) :SavedTaxs(d, __unkwnTax), Subj(""), perID(0.f), speciesUncertain(false),depth(d) {}
+  TaxObj(int d) :SavedTaxs(), Subj(""), perID(0.f), speciesUncertain(false),depth(d) {}
 	//functions
 	string getWriteString(const vector<double>&);
 	void copy_vals(TaxObj*t) { SavedTaxs = t->SavedTaxs; depth = t->depth; }
 	void setRepID(bool x) { repID = x; }
-	void makeSpeciesUnknown() { if (speciesUncertain) { SavedTaxs[SavedTaxs.size() - 1] = __unkwnTax; } }
+   void makeSpeciesUnknown() {
+		if (speciesUncertain && depth > 0) {
+			if ((int)SavedTaxs.size() < depth) { SavedTaxs.resize(depth, __unkwnTax); }
+			SavedTaxs[depth - 1] = __unkwnTax;
+		}
+	}
 	//get tax at depth x
   string& get(int x) {
 		if (x < 0 || x >= depth || x >= (int)SavedTaxs.size()) { return __unkwnTax; }
 		return SavedTaxs[x];
 	}
 	void set(int x, string v) { 
-		if (x < (int)SavedTaxs.size()) { SavedTaxs[x] = v; } 
-		if (x > depth) { depth = x; }
+       if (x < 0) { return; }
+		if (x >= (int)SavedTaxs.size()) { SavedTaxs.resize(x + 1, __unkwnTax); }
+		SavedTaxs[x] = v;
+		if (x >= depth) { depth = x + 1; }
 	}
 	//check if other tax is better and copies if so these vals over itself
 	bool evalAcpyTax(TaxObj* oth);
 	inline void copyOver(TaxObj* oth);
-	void addHitDB(string x) { SavedTaxs.push_back(x); depth = SavedTaxs.size(); }
+   void addHitDB(string x) { SavedTaxs.push_back(x); depth = static_cast<int>(SavedTaxs.size()); }
 
 	//int dept() { return depth; }
 	//variables
@@ -65,8 +72,11 @@ private:
 
 struct BlastRes
 {
+    BlastRes();
 	BlastRes(const string&,int);
-	bool isSameQuery(const string &q) {	if (q == Query) { return true; } return false;	}
+   bool parseFromLine(const string&, int);
+	static bool extractQueryToken(const string&, string&);
+	bool isSameQuery(const string &q) const {	if (q == Query) { return true; } return false;	}
 	
 	string Query, Sbj;
 	int alLen;
@@ -80,12 +90,17 @@ class BlastReader
 public:
 	BlastReader(const string&, const string&);
  ~BlastReader();
-	list<BlastRes*> getResBatch();
+  vector<BlastRes> getResBatch();
 private:
 
 	bool openedGZ,processedBatch;
-	BlastRes* lastBlast;
+    bool hasLastBlast;
+	BlastRes lastBlast;
 	istream* blast;
 	bool allRead;
 	int inptFmt;
+	int blastCnter;
+  string lineBuffer;
+	unordered_set<string> foundSbjs;
+	vector<BlastRes> batchBuffer;
 };

@@ -1,4 +1,54 @@
 #include "RefTax.h"
+#include <cctype>
+
+namespace {
+inline bool iequals_ascii_range(const string& src, size_t begin, size_t end, const char* txt) {
+	const size_t len = end - begin;
+	size_t i = 0;
+	for (; txt[i] != '\0'; ++i) {
+		if (i >= len) { return false; }
+		if (std::tolower(static_cast<unsigned char>(src[begin + i])) != std::tolower(static_cast<unsigned char>(txt[i]))) {
+			return false;
+		}
+	}
+	return i == len;
+}
+
+inline bool istarts_with_ascii_range(const string& src, size_t begin, size_t end, const char* txt) {
+	const size_t len = end - begin;
+	for (size_t i = 0; txt[i] != '\0'; ++i) {
+		if (i >= len) { return false; }
+		if (std::tolower(static_cast<unsigned char>(src[begin + i])) != std::tolower(static_cast<unsigned char>(txt[i]))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+inline bool parse_double_range(const string& src, size_t begin, size_t end, double& out) {
+	const char* first = src.data() + begin;
+	const char* last = src.data() + end;
+   char* parseEnd = nullptr;
+	out = std::strtod(first, &parseEnd);
+	return parseEnd == last;
+}
+
+inline bool parse_int_range(const string& src, size_t begin, size_t end, int& out) {
+	const char* first = src.data() + begin;
+	const char* last = src.data() + end;
+   char* parseEnd = nullptr;
+	long parsed = std::strtol(first, &parseEnd, 10);
+	if (parseEnd != last) { return false; }
+	out = static_cast<int>(parsed);
+	return true;
+}
+
+inline bool query_matches_line(const string& line, const string& query) {
+	const size_t sep = line.find('\t');
+	if (sep == string::npos || sep != query.size()) { return false; }
+	return line.compare(0, sep, query) == 0;
+}
+}
 
 //generic functions
 void trim(string& str,
@@ -30,12 +80,20 @@ speciesUncertain(t->speciesUncertain),depth(t->depth) {
 }
 
 string TaxObj::getWriteString(const vector<double>& ids) {
-	string ret(SavedTaxs[0]);
-	for (int i = 1; i < (int) SavedTaxs.size(); i++) {
-		if (i >= depth || SavedTaxs[i] == __unkwnTax || (i<7 && perID<ids[i])) {
+   int outDepth = (int)ids.size();
+	if (outDepth <= 0) {
+		outDepth = depth;
+	}
+	if (outDepth <= 0) {
+		return "";
+	}
+	string ret(get(0));
+	for (int i = 1; i < outDepth; i++) {
+		string& cur = get(i);
+		if (i >= depth || cur == __unkwnTax || (i < 7 && i < (int)ids.size() && perID < ids[i])) {
 			ret += __defaultTaxSep + __unkwnTaxWR;
 		} else {
-			ret += __defaultTaxSep + SavedTaxs[i];
+          ret += __defaultTaxSep + cur;
 		}
 	}
 	if (repID) {
@@ -47,60 +105,72 @@ string TaxObj::getWriteString(const vector<double>& ids) {
 
 
 TaxObj::TaxObj(const string& X,int d, bool nativeSLV, bool doNotCheckTax):
-	SavedTaxs(d, __unkwnTax), Subj(""), perID(0.f), speciesUncertain(false),depth(0){
-	size_t fnd = 0;
-	//size_t offset = 1;
+   SavedTaxs(), Subj(""), perID(0.f), speciesUncertain(false),depth(0){
+	SavedTaxs.reserve(d);
+ size_t fnd = nativeSLV ? 0 : X.find("__", 0);
 	if (!nativeSLV) {
-		fnd = X.find("__", 0) + 2;
+		fnd = (fnd == string::npos) ? string::npos : fnd + 2;
 	}
-	
-	
+
+	const size_t strL = X.length();
 	int cnt(0);
-	size_t strL = X.length();
-	while (fnd != string::npos) {
-		size_t f2 = X.find(";", fnd );
-		string substr = X.substr(fnd , (f2-fnd));
-		if (!nativeSLV) { fnd = X.find("__", fnd + 2)+2; } else {
-			fnd = f2 + 1;
-			if (fnd >= strL) { fnd = string::npos; }
-		}
-		trim(substr);
-		string lcsubstr(substr); transform(lcsubstr.begin(), lcsubstr.end(), lcsubstr.begin(), ::tolower);
-		
-		
+	while (fnd != string::npos && cnt < d) {
+		size_t f2 = X.find(";", fnd);
+		size_t end = (f2 == string::npos) ? strL : f2;
 
-		bool taxKnown = substr.length() > 0 && lcsubstr != "unclassified" && lcsubstr != "uncultured bacterium"
-			&& lcsubstr != "uncultured" && substr != "?";
-		
-		if (taxKnown && cnt == 6) {//species level.. remove strain info
-			size_t pos = substr.find(" ");
-			pos = substr.find(" ", pos + 1);
-			//some special rules for species level tax unknowns..
-			size_t pos2 = substr.find("sp.");
-			if (lcsubstr.find("uncultured") == 0 ||
-				lcsubstr.find("unclassified") == 0) {//uncultured blah.. remove
-				speciesUncertain = true;
-			} else if (pos2 == pos - 3 &&
-				substr.substr(0,pos2-1) == SavedTaxs[cnt-1]) {
-				speciesUncertain = true;
-			} else {
-				substr = substr.substr(0, pos);
+		size_t begin = fnd;
+		while (begin < end && (X[begin] == ' ' || X[begin] == '\t')) { ++begin; }
+		while (end > begin && (X[end - 1] == ' ' || X[end - 1] == '\t')) { --end; }
+        const size_t tokenLen = end - begin;
+
+        bool taxKnown = tokenLen > 0 && !iequals_ascii_range(X, begin, end, "unclassified") && !iequals_ascii_range(X, begin, end, "uncultured bacterium")
+			&& !iequals_ascii_range(X, begin, end, "uncultured") && !(tokenLen == 1 && X[begin] == '?');
+
+		if (taxKnown && cnt == 6) {
+           size_t pos = X.find(' ', begin);
+			if (pos != string::npos && pos < end) {
+				pos = X.find(' ', pos + 1);
+				if (pos == string::npos || pos >= end) {
+					pos = string::npos;
+				}
 			}
-			
-
+            size_t pos2 = X.find("sp.", begin);
+			if (pos2 == string::npos || pos2 >= end) {
+				pos2 = string::npos;
+			}
+			if (istarts_with_ascii_range(X, begin, end, "uncultured") || istarts_with_ascii_range(X, begin, end, "unclassified")) {
+				speciesUncertain = true;
+           } else if (pos != string::npos && pos2 == pos - 3) {
+				const size_t cmpLen = pos2 - begin - 1;
+              if (cnt > 0 && cnt - 1 < (int)SavedTaxs.size() && SavedTaxs[cnt - 1].size() == cmpLen && SavedTaxs[cnt - 1].compare(0, cmpLen, X, begin, cmpLen) == 0) {
+				speciesUncertain = true;
+              }
+			} else if (pos != string::npos) {
+				end = pos;
+			}
 		}
-		if ( doNotCheckTax || taxKnown) {
-			depth = cnt+1;
-			SavedTaxs[cnt] = substr;
-		} else {
-			//is already "?"
-			;
+
+		if (doNotCheckTax || taxKnown) {
+			depth = cnt + 1;
+         if ((int)SavedTaxs.size() <= cnt) {
+				SavedTaxs.resize(cnt + 1, __unkwnTax);
+			}
+          SavedTaxs[cnt].assign(X, begin, end - begin);
 		}
 
 		cnt++;
-		if (cnt >= d) {
-			break;
+		if (!nativeSLV) {
+			if (f2 == string::npos) { break; }
+			size_t next = X.find("__", f2);
+			fnd = (next == string::npos) ? string::npos : next + 2;
 		}
+		else {
+			if (f2 == string::npos || f2 + 1 >= strL) { break; }
+			fnd = f2 + 1;
+		}
+	}
+   if ((int)SavedTaxs.size() > depth) {
+		SavedTaxs.resize(depth);
 	}
 }
 
@@ -197,60 +267,88 @@ void RefTax::stats() {
 //        BlastRes
 //*******************************************************
 
+BlastRes::BlastRes() :
+	Query(""), Sbj(""), alLen(0), perID(0.f), eval(-1.f), score(0.f),
+	Qcoverage(0.f), fail(true) {
+}
+
 BlastRes::BlastRes(const string& line, int inptFmt):
 		Query(""), Sbj(""), alLen(0), perID(0.f), eval(-1.f), score(0.f),
-		Qcoverage(0.f),fail(false){
+		Qcoverage(0.f), fail(true) {
+	parseFromLine(line, inptFmt);
+}
 
-	if (line.length()==0){ fail = true; return; }
-	size_t f1 = line.find("\t");
-	if (f1 == string::npos) {fail = true; return;}
-	Query = line.substr(0, f1);
-	//subject
-	size_t fp = f1 + 1; f1 = line.find("\t", f1 + 1);
-	if (f1 == string::npos) { fail = true; return; }
-	Sbj = line.substr(fp, f1-fp);
-	
-	//id
-	fp = f1 + 1; f1 = line.find("\t", f1 + 1);
-	if (f1 == string::npos) { fail = true; return; }
-	perID = atof(line.substr(fp, f1-fp).c_str());
+bool BlastRes::extractQueryToken(const string& line, string& query) {
+	if (line.empty()) { return false; }
+	const size_t sep = line.find('\t');
+	if (sep == string::npos) { return false; }
+	query.assign(line, 0, sep);
+	return true;
+}
 
-	//alignmentLength
-	fp = f1 + 1; f1 = line.find("\t", f1 + 1);
-	if (f1 == string::npos) { fail = true; return; }
-	alLen = atoi(line.substr(fp, f1-fp).c_str());
-	//mismatches
-	f1 = line.find("\t", f1 + 1);
-	//inserts
-	f1 = line.find("\t", f1 + 1);
-	//qstart
-	fp = f1 + 1;  f1 = line.find("\t", fp);
-	float qs = atof(line.substr(fp, f1 - fp).c_str());
-	//qstop
-	fp = f1 + 1; f1 = line.find("\t", fp);
-	float qe = atof(line.substr(fp, f1 - fp).c_str());
-	//sstart
-	f1 = line.find("\t", f1 + 1);
-	//sstop
-	f1 = line.find("\t", f1 + 1);
-//ql
-	fp = f1 + 1; f1 = line.find("\t", fp);
-	float ql = atof(line.substr(fp, f1 - fp).c_str());
+bool BlastRes::parseFromLine(const string& line, int inptFmt) {
+	(void)inptFmt;
+	fail = true;
+	Query.clear();
+	Sbj.clear();
+	alLen = 0;
+	perID = 0.0;
+	Qcoverage = 0.f;
 
-	Qcoverage = alLen / ql; //abs(qe - qs);
-	int x = 0;
-	/*  no needed: eval + bit score
-	//eval
-	fp = f1 + 1; f1 = line.find("\t", f1 + 1);
-	if (f1 == string::npos) { fail = true; return; }
-	string tmp = line.substr(fp, f1 - fp);
-	if (tmp != "*") {
-		eval = atof(tmp.c_str());
-		score = atof(line.substr(f1 + 1).c_str());
+ if (line.empty()) { return false; }
+
+	size_t lineEnd = line.size();
+	if (lineEnd > 0 && line[lineEnd - 1] == '\r') {
+		lineEnd--;
 	}
-	//score
-	*/
+	if (lineEnd == 0) { return false; }
 
+	size_t cursor = 0;
+	size_t begin = 0;
+	size_t end = 0;
+	auto nextField = [&](size_t& outBegin, size_t& outEnd) -> bool {
+     if (cursor > lineEnd) { return false; }
+		outBegin = cursor;
+		outEnd = line.find('\t', cursor);
+       if (outEnd == string::npos || outEnd > lineEnd) {
+			outEnd = lineEnd;
+			cursor = lineEnd + 1;
+		}
+		else {
+			cursor = outEnd + 1;
+		}
+		return outBegin <= outEnd;
+	};
+
+	if (!nextField(begin, end)) { return false; }
+	Query.assign(line, begin, end - begin);
+	if (!nextField(begin, end)) { return false; }
+	Sbj.assign(line, begin, end - begin);
+	if (!nextField(begin, end) || !parse_double_range(line, begin, end, perID)) { return false; }
+	if (!nextField(begin, end) || !parse_int_range(line, begin, end, alLen)) { return false; }
+	//mismatch
+	if (!nextField(begin, end)) { return false; }
+	//inserts
+	if (!nextField(begin, end)) { return false; }
+	//qstart
+	if (!nextField(begin, end)) { return false; }
+	//qstop
+	if (!nextField(begin, end)) { return false; }
+	//sstart
+	if (!nextField(begin, end)) { return false; }
+	//stop
+	if (!nextField(begin, end)) { return false; }
+	//qlen
+	if (!nextField(begin, end)) { return false; }
+	double ql = 0.0;
+	if (!parse_double_range(line, begin, end, ql)) { return false; }
+
+	Qcoverage = 1.f; //could be eval in old m8 format..
+	if (ql > 1) {
+		Qcoverage = static_cast<float>(static_cast<double>(alLen) / ql);
+	}
+	fail = false;
+	return true;
 }
 
 
@@ -260,7 +358,7 @@ BlastRes::BlastRes(const string& line, int inptFmt):
 
 
 BlastReader::BlastReader(const string& inf, const string& inFmt):openedGZ(false), processedBatch(false),
-lastBlast(NULL), allRead(false), inptFmt(-1){
+hasLastBlast(false), blast(NULL), allRead(false), inptFmt(-1), blastCnter(0), lineBuffer(), foundSbjs(), batchBuffer(){
 #ifdef DEBUG
 	cerr << "ini blast file\n";
 #endif // DEBUG
@@ -283,52 +381,70 @@ lastBlast(NULL), allRead(false), inptFmt(-1){
 	} else if (inFmt == "uc") {
 		inptFmt = 1;
 	}
+	lineBuffer.reserve(512);
+	foundSbjs.reserve(256);
+	batchBuffer.reserve(256);
 
 }
 
 BlastReader::~BlastReader() {
-	if (lastBlast != NULL) {
-		delete lastBlast;
-		lastBlast = NULL;
-	}
 	if (blast != NULL) {
 		delete blast;
 		blast = NULL;
 	}
 }
 
-list<BlastRes*> BlastReader::getResBatch() {
-	string line("");
+vector<BlastRes> BlastReader::getResBatch() {
+	batchBuffer.clear();
+	foundSbjs.clear();
+	blastCnter++;
+
 	if (!processedBatch) {
-		getline(*blast, line, '\n');
-		lastBlast = new BlastRes(line,inptFmt);
+		while (getline(*blast, lineBuffer, '\n')) {
+			if (lineBuffer.empty()) { continue; }
+			if (lastBlast.parseFromLine(lineBuffer, inptFmt)) {
+				hasLastBlast = true;
+				break;
+			}
+		}
 		processedBatch = true;
-	}
-	list <BlastRes*> ret(0);
-	if (lastBlast == NULL || allRead || lastBlast->fail ) { return ret; }
-	unordered_map<std::string, int> foundSbjs;
-	unordered_map<std::string, int>::iterator Sfound;
-	ret.push_back(lastBlast);
-	foundSbjs[lastBlast->Sbj] = 1;
-	string cmpQu = lastBlast->Query;
-	while (1) {
-		if (!getline(*blast, line, '\n')) {
-			lastBlast = NULL; allRead = true;  break;
-		}
-		if (line.length() == 0) { continue; }
-		BlastRes* blr = new BlastRes(line, inptFmt);
-		if (!blr->isSameQuery(cmpQu)) {
-			//abort loop
-			lastBlast = blr;
-			break;
-		}
-		
-		if (foundSbjs.find(blr->Sbj) == foundSbjs.end()) {
-			//only insert once each subject
-			ret.push_back(blr);
-			foundSbjs[blr->Sbj] = 1;
+		if (!hasLastBlast) {
+			allRead = true;
+			return batchBuffer;
 		}
 	}
 
-	return ret;
+	if (!hasLastBlast || allRead || lastBlast.fail) {
+		return batchBuffer;
+	}
+
+   batchBuffer.push_back(lastBlast);
+	foundSbjs.insert(lastBlast.Sbj);
+	const string cmpQu = lastBlast.Query;
+
+	while (getline(*blast, lineBuffer, '\n')) {
+		if (lineBuffer.empty()) { continue; }
+		string lineQuery;
+		if (!BlastRes::extractQueryToken(lineBuffer, lineQuery)) { continue; }
+
+     if (lineQuery != cmpQu) {
+			hasLastBlast = lastBlast.parseFromLine(lineBuffer, inptFmt);
+			if (!hasLastBlast) { continue; }
+			return batchBuffer;
+		}
+
+      batchBuffer.emplace_back();
+		BlastRes& cur = batchBuffer.back();
+		if (!cur.parseFromLine(lineBuffer, inptFmt)) {
+			batchBuffer.pop_back();
+			continue;
+		}
+		if (!foundSbjs.insert(cur.Sbj).second) {
+			batchBuffer.pop_back();
+		}
+	}
+
+	hasLastBlast = false;
+	allRead = true;
+	return batchBuffer;
 }

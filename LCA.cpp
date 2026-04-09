@@ -6,7 +6,8 @@
 #include "Matrix.h"
 //0.24: fixed bug of not reading "k__?; p__?; c__?; .." strings
 //0.26: 28.3.26: fixed various smallish bugs, including wrongly reported %id in some cases, and some parallelization issues. 
-const char* LCA_ver = "0.26";
+//0.27: 4.9.26: performance improvements
+const char* LCA_ver = "0.27";
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";
@@ -147,7 +148,7 @@ int main(int argc, char* argv[])
 
 
 			//don't forget to destroy this object -> yes, done in LCA algo (better for async operation)
-			list<BlastRes*> tmpB = BR->getResBatch();
+           vector<BlastRes> tmpB = BR->getResBatch();
 			TaxRead++;
 
 			//check if this position LCA is finished

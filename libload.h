@@ -1,24 +1,24 @@
 //libload.h
 //contains constants and the std libs being loaded
 #pragma once
-#include <stdio.h>
+#include <cstdio>
 #include <string>
-#include <string.h>
+#include <cstring>
 #include <vector>
 #include <fstream>
 #include <sstream>
 #include <iostream>
 //#include <iterator>
-#include <string>
 #include <map>
 #include <list>
-#include <stdlib.h>
+#include <cstdlib>
 #include <algorithm>
-#include <math.h>
-#include <time.h>
+#include <cmath>
+#include <ctime>
 #include <random>
-#include <assert.h>
+#include <cassert>
 #include <unordered_map>
+#include <unordered_set>
 
 
 
@@ -50,7 +50,7 @@ typedef unsigned long ulong;
 
 
 //some static vars..
-static int __default_depth = 7;
+enum { __default_depth = 7 };
 static string __unkwnTax = "";
 static string __unkwnTaxWR = "?";
 static string __defaultTaxSep = "\t";

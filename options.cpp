@@ -38,9 +38,9 @@ void self_help() {
 options::options(int argc, char **argv,int defDep):
 	RefTaxFile(""), blastres(""), outF(""), input_format("bl8"), repHitPattern(""),
 	BLfilter(true), calcHighMats(false), hitRD(false), isReads(false),
-	annotateAll(false), nativeSlVdb(false), reportID(false), checkTaxoUnkw(true),
+   annotateAll(false), nativeSlVdb(false), reportID(false), reportBestHit(false), checkTaxoUnkw(true),
 	numThr(1), taxDepth(defDep), LCAfract(0.9f), minCover(0.5f), minAliLen(75), idThr(defDep,0),
-	blFiles(0), refDBs(0), Taxlvls(defDep), reportBestHit(false), version(false)
+    blFiles(0), refDBs(0), Taxlvls(defDep), version(false)
 {
 	idThr[1] = 78; idThr[2] = 88; idThr[3] = 91; idThr[4] = 93;
 	idThr[5] = 95; idThr[6] = 97;
@@ -93,7 +93,7 @@ options::options(int argc, char **argv,int defDep):
 		else if (!strcmp(argv[i], "-t"))
            numThr = atoi(requireValue(i, "-t"));
 		else if (!strcmp(argv[i], "-cover"))
-         minCover = atof(requireValue(i, "-cover"));
+          minCover = static_cast<float>(atof(requireValue(i, "-cover")));
 		else if (!strcmp(argv[i], "-LCAfrac"))
          LCAfract = atof(requireValue(i, "-LCAfrac"));
 		else if (!strcmp(argv[i], "-id")) {
