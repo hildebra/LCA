@@ -15,18 +15,17 @@ public:
 
 	//vars
 	string RefTaxFile, blastres, outF;
-	string input_format;//bl8 , uc
+	string input_format;//validated 11-column custom or legacy 12-column bl8
 	string repHitPattern; //KSGP style blast id hit report
 	bool BLfilter;     //do my own blast filter before LCA
 	bool calcHighMats; //calculate phylum etc level sum
 	bool hitRD; //show the database entry that was hit, in hiera file
 	bool isReads;
-	bool annotateAll; //give out OTU / READ even if not assigned??
 	bool nativeSlVdb;
 	bool reportID; // add column with %id match
 	bool reportBestHit; //reports best hit, if higher than required %id
 	bool checkTaxoUnkw; //check in the tax DB, if unkownn, ? etc levels are there and replaces with ?
-	int numThr; // number of threads
+	int numThr; //currently must be 1; retained for command-line compatibility
 	int taxDepth; //how deep does the taxonomy go?
 	double LCAfract;
 	float minCover;

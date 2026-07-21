@@ -7,7 +7,11 @@
 //0.24: fixed bug of not reading "k__?; p__?; c__?; .." strings
 //0.26: 28.3.26: fixed various smallish bugs, including wrongly reported %id in some cases, and some parallelization issues. 
 //0.27: 4.9.26: performance improvements
-const char* LCA_ver = "0.27";
+//0.28: 21.7.26: deterministic hit filtering; corrected LCA/depth, hit-read output,
+//taxonomy/rank and CRLF parsing, query-span coverage, legacy 12-column BLAST input,
+//configurable tdep, strict input,
+//single-thread execution, multi-database reporting, and output error handling.
+const char* LCA_ver = "0.28";
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";
@@ -22,189 +26,119 @@ void welcomeMsg() {
 }
 int main(int argc, char* argv[])
 {
-	
-	//measure execution time
 	clock_t tStart = clock();
-
-	options* OPT = new options(argc, argv, __default_depth);
-	if (OPT->version) {
+	options OPT(argc, argv, __default_depth);
+	if (OPT.version) {
 		cout << LCA_ver << endl;
-		exit(0);
+		return 0;
 	}
 	welcomeMsg();
 
-
-	if (argc < 2) {
-		helpMsg();
-		exit(3);
-	}
-	/*string RefTaxFile = argv[2];
-	string blastres = argv[1];
-	string outF = argv[3];*/
-	int numThr = OPT->numThr;
-	const size_t refDbCount = OPT->refDBs.size();
-	
-	bool highLvl(OPT->calcHighMats);
-
-	//and prep potential higher level mat (vector based, no samples are separated)
-	Matrix* mat = new Matrix(OPT->taxDepth, OPT->Taxlvls, OPT->hitRD);
-	//parrallel prepare
-	int workerNum(numThr - 1);
-#ifdef parallel
-	std::future<TaxObj*> *parvec = new std::future<TaxObj*>[numThr];
-#else
-	vector<TaxObj*> sCore(numThr, NULL);
-#endif
-	//list<TaxObj*> assigns(0);
+	const size_t refDbCount = OPT.refDBs.size();
+	const bool highLvl = OPT.calcHighMats;
+	Matrix mat(OPT.taxDepth, OPT.Taxlvls, OPT.hitRD);
 	unordered_map<string, TaxObj*> assign;
+	unordered_set<string> inputQueries;
 
-	//ini output stream
-	string IDname = "OTU";
-	if (OPT->isReads) { IDname = "Reads"; }
-	ofstream O(OPT->outF.c_str());
-	O << IDname << "\t" << OPT->TaxLvl2string();
-	if (OPT->hitRD) { O << "\tHit2DB"; }
-	if (OPT->reportID) { O << "\t%ID"; }
-	O << endl;// Domain\tPhylum\tClass\tOrder\tFamily\tGenus\tSpecies\tOTU\n";
+	const string IDname = OPT.isReads ? "Reads" : "OTU";
+	ofstream O(OPT.outF.c_str());
+	if (!O) {
+		cerr << "Could not create output file " << OPT.outF << endl;
+		return 30;
+	}
+	O << IDname << "\t" << OPT.TaxLvl2string();
+	if (OPT.hitRD) { O << "\tHit2DB"; }
+	if (OPT.reportID) { O << "\t%ID"; }
+	O << '\n';
 
-	ofstream HITPAT; bool checkHitPat = false;
-	if (OPT->repHitPattern != "") {
-		checkHitPat = true;
-		HITPAT = ofstream(OPT->repHitPattern.c_str());
+	ofstream HITPAT;
+	const bool checkHitPat = !OPT.repHitPattern.empty();
+	if (checkHitPat) {
+		HITPAT.open(OPT.repHitPattern.c_str());
+		if (!HITPAT) {
+			cerr << "Could not create hit-pattern file " << OPT.repHitPattern << endl;
+			return 31;
+		}
 		HITPAT << "OTU/ASV\tID\tTaxDepth\n";
 	}
 
+	size_t duplicateQueries = 0;
+	size_t reassignedQueries = 0;
+	size_t taxWritten = 0;
+	const bool multiDBuse = refDbCount > 1;
+	for (size_t xi = 0; xi < refDbCount; xi++) {
+		RefTax RT(OPT.refDBs[xi], OPT.taxDepth, OPT.nativeSlVdb, OPT.checkTaxoUnkw);
+		RT.setTaxLvls(OPT.Taxlvls);
+		BlastReader BR(OPT.blFiles[xi], OPT.input_format);
 
-	//some stats
-	int dblSbj(0); int replSbjTax(0); 
-	int Taxwritten = 0; int TaxRead = 0;
-	//only 1 DB use? Doesn't need to keep hits in mem..
-	bool multiDBuse = true; 
-	if (OPT->refDBs.size() == 1) { multiDBuse = false; }
+		while (true) {
+			vector<BlastRes> hits = BR.getResBatch();
+			if (hits.empty()) { break; }
+			inputQueries.insert(hits.front().Query);
+			TaxObj* result = LCA(hits, &RT, &OPT);
+			if (result == NULL) { continue; }
 
-	for (int xi = 0; xi < (int) OPT->refDBs.size(); xi++) {
-		//read in tax DB
-		RefTax* RT = new RefTax( OPT->refDBs[xi], OPT->taxDepth, OPT->nativeSlVdb, OPT->checkTaxoUnkw);
-#ifdef DEBUG
-		cerr << "Ref tax read\n";
-#endif // DEBUG
-
-		RT->setTaxLvls(OPT->Taxlvls);
-		//ini & parse blast
-		BlastReader* BR = new BlastReader(OPT->blFiles[xi], OPT->input_format);
-
-		//some flags for the parallel execution
-		bool burninDone(false);//ini all Cores
-		bool allRead(false);//blast file parsed
-		int ti(0); int ti_end(-1);
-
-		//loop over all blast results
-		while (1) {
-			if (allRead && ti_end == ti) {//no more blast results
-				cout << "Done Blast File reading\n"; break;
-			}
-          bool workerHasResult = false;
-			if (burninDone) {
-#ifdef parallel
-				workerHasResult = parvec[ti].valid();
-#else
-				workerHasResult = (sCore[ti] != NULL);
-#endif
-			}
-			if (workerHasResult) {
-				//assigns.push_back(parvec[ti].get());
-#ifdef parallel
-				TaxObj* tmp = parvec[ti].get();
-#else
-				TaxObj* tmp = sCore[ti];
-                sCore[ti] = NULL;
-#endif			
-				//store the percID, if requested
+			if (!multiDBuse) {
+				O << result->Subj << '\t' << result->getWriteString(OPT.idThr) << '\n';
 				if (checkHitPat) {
-					HITPAT<< tmp->Subj<<"\t"<< tmp->perID<< "\t"<< tmp->depth << endl;
+					HITPAT << result->Subj << '\t' << result->perID << '\t' << result->depth << '\n';
 				}
-				if (!multiDBuse){	//and write the tax out
-					O << (tmp)->Subj << "\t" << (tmp)->getWriteString(OPT->idThr) << endl;
-					Taxwritten++;
-					if (highLvl) {
-						mat->add(tmp);
-					}
-					delete tmp; 
-				} else {
-					//this part refers to previously determined tax (needs > 1 ref DB)
-					auto tf = assign.find(tmp->Subj);
-					if (tf == assign.end()) {
-						assign[tmp->Subj] = tmp;
-					}
-					else {
-						dblSbj++;
-						if (assign[tmp->Subj]->evalAcpyTax(tmp)) {
-							replSbjTax++;
-						}
-						delete tmp;
-					}
-				}
+				taxWritten++;
+				if (highLvl) { mat.add(result); }
+				delete result;
+				continue;
 			}
 
-
-			//don't forget to destroy this object -> yes, done in LCA algo (better for async operation)
-           vector<BlastRes> tmpB = BR->getResBatch();
-			TaxRead++;
-
-			//check if this position LCA is finished
-			if (!allRead) {
-				if (tmpB.size() == 0) {//break routine,write final Results
-					allRead = true;
-					ti_end = ti;
-					//& fetch remaining worker jobs
-				} else {
-#ifdef parallel
-					parvec[ti] = async(std::launch::async, LCA, tmpB, RT, OPT);
-#else
-					sCore[ti] = LCA(tmpB, RT, OPT);
-#endif
-				}
-			}
-
-			ti++;
-			if (ti > workerNum) { //multi core control
-				//TODO this is wrong ? if (allRead) { break; } 
-				ti = 0; burninDone = true;
+			auto previous = assign.find(result->Subj);
+			if (previous == assign.end()) {
+				assign[result->Subj] = result;
+			} else {
+				duplicateQueries++;
+				if (previous->second->evalAcpyTax(result)) { reassignedQueries++; }
+				delete result;
 			}
 		}
-		delete RT; delete BR;
+		cout << "Done Blast File reading\n";
 	}
 
-//work through remaining hits from multi DBs.. should not go through here in single DB mode
-	for (auto it = assign.begin(); it != assign.end(); it++) {
-		O << (it->second)->Subj << "\t" << (it->second)->getWriteString(OPT->idThr) << endl;
-		Taxwritten++;
-		if (highLvl) {
-			mat->add(it->second);
+	vector<string> orderedQueries;
+	orderedQueries.reserve(assign.size());
+	for (const auto& entry : assign) { orderedQueries.push_back(entry.first); }
+	std::sort(orderedQueries.begin(), orderedQueries.end());
+	for (const auto& query : orderedQueries) {
+		TaxObj* result = assign[query];
+		O << result->Subj << '\t' << result->getWriteString(OPT.idThr) << '\n';
+		if (checkHitPat) {
+			HITPAT << result->Subj << '\t' << result->perID << '\t' << result->depth << '\n';
 		}
-		delete it->second; it->second = NULL;
-		//into file now
+		taxWritten++;
+		if (highLvl) { mat.add(result); }
+		delete result;
+		assign[query] = NULL;
 	}
-	O.close();
+
+	O.flush();
+	if (!O) {
+		cerr << "Failed while writing output file " << OPT.outF << endl;
+		return 32;
+	}
 	if (checkHitPat) {
-		HITPAT.close();
+		HITPAT.flush();
+		if (!HITPAT) {
+			cerr << "Failed while writing hit-pattern file " << OPT.repHitPattern << endl;
+			return 33;
+		}
 	}
-	TaxRead--;
-	//clean up
-	cout << "Wrote " << Taxwritten << "/" << TaxRead << " LCA tax assignments\n";
+	cout << "Wrote " << taxWritten << "/" << inputQueries.size() << " LCA tax assignments\n";
 
-  if (highLvl) {
-		mat->writeAllLevels(OPT->outF);
+	if (highLvl && !mat.writeAllLevels(OPT.outF)) {
+		return 34;
 	}
 
-	if (dblSbj>0) {
-      cout << "Found " << dblSbj << " double subject sequences in "<< refDbCount <<", reassigned " << replSbjTax << " of these." << endl;
+	if (duplicateQueries > 0) {
+		cout << "Found " << duplicateQueries << " duplicate query assignments across " << refDbCount
+			<< " reference databases; reassigned " << reassignedQueries << " of these." << endl;
 	}
-   delete mat; delete OPT;
-#ifdef parallel
-	delete[] parvec;
-#endif
 	printf("LCA finished. Time taken: %.2fs\n", (double)(clock() - tStart) / CLOCKS_PER_SEC);
-
-
+	return 0;
 }

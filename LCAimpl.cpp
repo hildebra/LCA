@@ -24,31 +24,22 @@ TaxObj* LCA(vector<BlastRes>& BR, RefTax* RT, options* opt) {
 #endif
 	bool singularHit(false);
 	
-	TaxObj* ret = LCAcore(allTax,singularHit,opt->LCAfract,opt->taxDepth) ;
-	ret->setRepID(opt->reportID);
-   ret->Subj = BR.front().Query;
+	TaxObj* ret = LCAcore(allTax,singularHit,opt->LCAfract,opt->taxDepth);
+	ret->Subj = BR.front().Query;
 	ret->perID = avgPerID;
 
-	if (opt->hitRD ){
-        auto bestIt = std::max_element(BR.begin(), BR.end(), [](const BlastRes& a, const BlastRes& b) {
+	if (opt->hitRD) {
+		auto bestIt = std::max_element(BR.begin(), BR.end(), [](const BlastRes& a, const BlastRes& b) {
 			if (a.perID != b.perID) { return a.perID < b.perID; }
-			return a.alLen < b.alLen;
+			if (a.alLen != b.alLen) { return a.alLen < b.alLen; }
+			if (a.queryCoverageKnown != b.queryCoverageKnown) { return !a.queryCoverageKnown; }
+			if (a.queryCoverageKnown && a.Qcoverage != b.Qcoverage) { return a.Qcoverage < b.Qcoverage; }
+			return a.Sbj > b.Sbj;
 		});
-		if (bestIt != BR.end()) {
-			ret->addHitDB(bestIt->Sbj);
-			ret->perID = (float)bestIt->perID;
-		} else {
-			ret->addHitDB(__unkwnTax);
-			ret->perID = (float)bestPerID;
-		}
-		/*if (opt->reportBestHit && (*BR.begin())->perID >= opt->idThr.back()) {
-			ret->addHitDB((*BR.begin())->Sbj);
-		} else if (singularHit) {
-			ret->addHitDB((*BR.begin())->Sbj);
-		} else {
-			ret->addHitDB(__unkwnTax);
-		}*/
+		const bool reportSubject = bestIt != BR.end() && (singularHit || opt->reportBestHit);
+		ret->setHitDB(reportSubject ? bestIt->Sbj : __unkwnTax);
 	}
+	ret->setRepID(opt->reportID);
 	
 /*	if (allTax.size() > 1) {
 		int ii = 0;
@@ -66,100 +57,113 @@ TaxObj* LCA(vector<BlastRes>& BR, RefTax* RT, options* opt) {
 
 TaxObj* LCAcore(const vector<TaxObj*>& TO, bool &hitRd, double LCAfrac, int tdepth) {
 	TaxObj* ret = new TaxObj(tdepth);
-	
-	int FullSetCnt((int)TO.size());
-	int MaxSetCnt(FullSetCnt);
-	if ( FullSetCnt == 1 ){//early return
-       ret->copy_vals(TO.front());
+	hitRd = false;
+	const int maxSetCount = static_cast<int>(TO.size());
+	if (maxSetCount == 1) {
+		ret->copy_vals(TO.front());
 		hitRd = true;
 		return ret;
 	}
+	if (maxSetCount == 0) { return ret; }
 
-   vector<char> DO(MaxSetCnt, 1);
+	vector<char> active(maxSetCount, 1);
 
-	for (int DL(0); DL < tdepth; DL++) {
+	for (int DL = 0; DL < tdepth; DL++) {
 		unordered_map<string, int> cntOptions;
-        cntOptions.reserve(MaxSetCnt + 1);
-		cntOptions[__unkwnTax] = 0;
-		bool goDeeper(false);
-		//create set of counts at current level
-        for (int pos = 0; pos < MaxSetCnt; ++pos) {
-			if (!DO[pos]) { continue; }
+		cntOptions.reserve(maxSetCount + 1);
+		int activeCount = 0;
+		int unknownCount = 0;
+		for (int pos = 0; pos < maxSetCount; ++pos) {
+			if (!active[pos]) { continue; }
+			activeCount++;
 			const string& curTax = TO[pos]->get(DL);
-			auto fnd = cntOptions.find(curTax);
-			if (fnd == cntOptions.end()) {
-				cntOptions[curTax] = 1;
-			} else {
-				fnd->second++;
-			}
+			if (curTax == __unkwnTax) { unknownCount++; }
+			else { cntOptions[curTax]++; }
 #ifdef LCAdebg
 			cout << curTax << " ";
 #endif // LCAdebg
 		}
-		//some static variables
-		int unknwCnt(cntOptions[__unkwnTax]);
-		double MaxPossCons(double (FullSetCnt - unknwCnt));
-        const string* consens = &__unkwnTax;
+		const int knownCount = activeCount - unknownCount;
+		if (knownCount <= 0) { break; }
 
-		//check if all unkown
-		if (unknwCnt >= MaxSetCnt) {
-			break;
-		}
-		//eval if consensus count was present
-
-      int bestCnt = -1;
-		for (auto ic = cntOptions.begin(); ic != cntOptions.end(); ++ic) {
-			if (ic->first == __unkwnTax) { continue; }
-			if (ic->second > bestCnt || (ic->second == bestCnt && ic->first < *consens)) {
-				bestCnt = ic->second;
-				consens = &ic->first;
+		int bestCount = 0;
+		string consensus;
+		for (const auto& option : cntOptions) {
+			if (option.second > bestCount ||
+				(option.second == bestCount && (consensus.empty() || option.first < consensus))) {
+				bestCount = option.second;
+				consensus = option.first;
 			}
 		}
 
-		//best count only needs to be classified tax and reaching the e.g. 90% of max possible count
-		if (bestCnt >= (MaxPossCons * LCAfrac)) {
-			FullSetCnt = bestCnt; // reset full set cnt to current consensus set size for deeper levels
-			goDeeper = true;
-			ret->set(DL, *consens);
+		if (bestCount < static_cast<double>(knownCount) * LCAfrac) { break; }
+		ret->set(DL, consensus);
 #ifdef LCAdebg
-			cout << " : " << *consens;
+		cout << " : " << consensus;
 #endif
-		}
 
 #ifdef LCAdebg
 		cout << endl;
 #endif
-		if (!goDeeper) { break; }
-
-		if (FullSetCnt == (MaxSetCnt - unknwCnt) ) {
-			continue;
-		}
-
-		//while loop again, to exclude non consens assignments
-     for (int pos = 0; pos < MaxSetCnt; ++pos) {
-			if (!DO[pos]) { continue; }
-			if (TO[pos]->get(DL) == *consens) { continue; }
-			DO[pos] = 0;
+		// Only descendants of the accepted parent can vote at the next level.
+		for (int pos = 0; pos < maxSetCount; ++pos) {
+			if (active[pos] && TO[pos]->get(DL) != consensus) { active[pos] = 0; }
 		}
 	}
 	return ret;
 }
 
 double filterBlastPrimary(vector<BlastRes>& BR, options* opt, double& bestID) {
-	
+	bestID = 0.0;
+	if (BR.empty()) { return 0.0; }
+	auto betterQuality = [](const BlastRes& a, const BlastRes& b) {
+		if (a.perID != b.perID) { return a.perID > b.perID; }
+		if (a.alLen != b.alLen) { return a.alLen > b.alLen; }
+		if (a.queryCoverageKnown != b.queryCoverageKnown) { return a.queryCoverageKnown; }
+		if (a.queryCoverageKnown && a.Qcoverage != b.Qcoverage) { return a.Qcoverage > b.Qcoverage; }
+		return a.Sbj < b.Sbj;
+	};
+
 	if (!opt->BLfilter) {
-        bestID = BR.front().perID;
-	 return BR.front().perID * (double)BR.front().alLen;
+		const BlastRes* best = &BR.front();
+		for (const auto& hit : BR) {
+			if (betterQuality(hit, *best)) { best = &hit; }
+		}
+		bestID = best->perID;
+		return bestID * static_cast<double>(best->alLen);
 	}
 
-	float minCov = opt->minCover;
-	int maxL(0);
-	
-   for (auto it = BR.begin(); it != BR.end();it++) {
-		if (it->perID > bestID && it->alLen >= maxL * 0.95) { bestID = it->perID; maxL = it->alLen; }
-		else if (it->perID > bestID * 0.9 && it->alLen >= maxL * 1.2) { bestID = it->perID; maxL = it->alLen; }
+	const float minCov = opt->minCover;
+	auto passesCoverage = [minCov](const BlastRes& hit) {
+		return !hit.queryCoverageKnown || hit.Qcoverage >= minCov;
+	};
+	const int minAliLen = static_cast<int>(std::ceil(opt->minAliLen));
+	const BlastRes* highestIdentity = nullptr;
+	for (const auto& hit : BR) {
+		if (hit.alLen < minAliLen || !passesCoverage(hit)) { continue; }
+		if (highestIdentity == nullptr || betterQuality(hit, *highestIdentity)) {
+			highestIdentity = &hit;
+		}
 	}
-	
+	if (highestIdentity == nullptr) {
+		BR.clear();
+		return 0.0;
+	}
+
+	// Order-independent version of the former running compromise: prefer the
+	// highest-identity hit unless a hit within 10% identity is at least 20% longer.
+	const BlastRes* anchor = highestIdentity;
+	if (!opt->reportBestHit) {
+		const double substantialLength = static_cast<double>(highestIdentity->alLen) * 1.2;
+		for (const auto& hit : BR) {
+			if (static_cast<double>(hit.alLen) < substantialLength || !passesCoverage(hit) ||
+				hit.perID < highestIdentity->perID * 0.9) { continue; }
+			if (anchor == highestIdentity || betterQuality(hit, *anchor)) { anchor = &hit; }
+		}
+	}
+	bestID = anchor->perID;
+	int maxL = anchor->alLen;
+
 	//filter parameters
 	double lengthToleranceF(0.85f);
 	double tolerance(1.5);
@@ -172,9 +176,7 @@ double filterBlastPrimary(vector<BlastRes>& BR, options* opt, double& bestID) {
 	else if (bestID >= 98) { tolerance = 0.75f; }
 	else if (bestID >= 97) { tolerance = 1.0f; }
 	
-	//precalc maxL
-   maxL = static_cast<int>(std::ceil(static_cast<double>(maxL) * lengthToleranceF));
-	const int minAliLen = static_cast<int>(std::ceil(opt->minAliLen));
+	maxL = static_cast<int>(std::ceil(static_cast<double>(maxL) * lengthToleranceF));
 	if (maxL < minAliLen) {
 		maxL = minAliLen;
 	}
@@ -184,7 +186,7 @@ double filterBlastPrimary(vector<BlastRes>& BR, options* opt, double& bestID) {
 		BlastRes& cur = BR[readPos];
 		if ((cur.perID + tolerance) < bestID ||
 			cur.alLen < maxL ||
-			cur.Qcoverage < minCov) {
+			!passesCoverage(cur)) {
 			continue;
 		}
 		if (writePos != readPos) {
@@ -208,18 +210,19 @@ vector<TaxObj*> BlastToTax(const vector<BlastRes>& BR, RefTax* RT, options* opt,
 
 	int depth = RT->depth();
 	bool anySpeciesCertain(false);
-  for (auto it = BR.begin(); it != BR.end(); it++) {
+	for (auto it = BR.begin(); it != BR.end(); it++) {
 		double curID(it->perID);
 		consPerID += (float)curID;
-        auto fnd = RT->find(it->Sbj);
+		auto fnd = RT->find(it->Sbj);
 		if (fnd != RT->end()) {
 			TaxObj* F = new TaxObj(fnd->second);
+			const int availableDepth = F->depth;
 			int maxD(0);
 			//assign max depth based on % id to subject
-			while (maxD < depth && thr[maxD] < curID ) { maxD++; }
-			F->depth = maxD;
-           ret.emplace_back(F);
-			if (!F->speciesUncertain) { anySpeciesCertain = true; }
+			while (maxD < depth && maxD < (int)thr.size() && thr[maxD] <= curID) { maxD++; }
+			F->depth = std::min(maxD, availableDepth);
+			ret.emplace_back(F);
+			if (F->depth > 6 && !F->speciesUncertain) { anySpeciesCertain = true; }
 		}	else {
             cerr << "Could not find tax for Subject " << it->Sbj << endl;
 			exit(74);
@@ -228,9 +231,9 @@ vector<TaxObj*> BlastToTax(const vector<BlastRes>& BR, RefTax* RT, options* opt,
 	consPerID /= BR.size();
 
 	//remove uncertain species, in case of enough good hits
-  if (anySpeciesCertain && ret.size() > 1) {
+	if (anySpeciesCertain && ret.size() > 1) {
 		for (auto* t : ret) {
-            if (t->speciesUncertain) {
+			if (t->depth > 6 && t->speciesUncertain) {
 				t->makeSpeciesUnknown();
 			}
 		}

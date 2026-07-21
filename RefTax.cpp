@@ -1,5 +1,8 @@
 #include "RefTax.h"
+#include <cerrno>
 #include <cctype>
+#include <climits>
+#include <limits>
 
 namespace {
 inline bool iequals_ascii_range(const string& src, size_t begin, size_t end, const char* txt) {
@@ -26,27 +29,80 @@ inline bool istarts_with_ascii_range(const string& src, size_t begin, size_t end
 }
 
 inline bool parse_double_range(const string& src, size_t begin, size_t end, double& out) {
+	if (begin >= end) { return false; }
 	const char* first = src.data() + begin;
 	const char* last = src.data() + end;
-   char* parseEnd = nullptr;
+	char* parseEnd = nullptr;
+	errno = 0;
 	out = std::strtod(first, &parseEnd);
-	return parseEnd == last;
+	return parseEnd == last && errno != ERANGE && std::isfinite(out);
 }
 
 inline bool parse_int_range(const string& src, size_t begin, size_t end, int& out) {
+	if (begin >= end) { return false; }
 	const char* first = src.data() + begin;
 	const char* last = src.data() + end;
-   char* parseEnd = nullptr;
+	char* parseEnd = nullptr;
+	errno = 0;
 	long parsed = std::strtol(first, &parseEnd, 10);
-	if (parseEnd != last) { return false; }
+	if (parseEnd != last || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX) { return false; }
 	out = static_cast<int>(parsed);
 	return true;
 }
 
-inline bool query_matches_line(const string& line, const string& query) {
-	const size_t sep = line.find('\t');
-	if (sep == string::npos || sep != query.size()) { return false; }
-	return line.compare(0, sep, query) == 0;
+inline vector<pair<size_t, size_t> > whitespace_fields(const string& line) {
+	vector<pair<size_t, size_t> > fields;
+	fields.reserve(12);
+	size_t pos = 0;
+	while (pos < line.size()) {
+		while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
+		if (pos == line.size()) { break; }
+		const size_t begin = pos;
+		while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
+		fields.emplace_back(begin, pos);
+	}
+	return fields;
+}
+
+inline int tax_rank_from_prefix(char rank) {
+	switch (std::tolower(static_cast<unsigned char>(rank))) {
+	case 'd':
+	case 'k': return 0;
+	case 'p': return 1;
+	case 'c': return 2;
+	case 'o': return 3;
+	case 'f': return 4;
+	case 'g': return 5;
+	case 's': return 6;
+	case 't': return 7;
+	default: return -1;
+	}
+}
+
+inline int known_tax_count(const TaxObj& tax) {
+	return static_cast<int>(std::count_if(tax.SavedTaxs.begin(), tax.SavedTaxs.end(),
+		[](const string& value) { return value != __unkwnTax; }));
+}
+
+inline bool contains_species_sp_marker(const string& value) {
+	for (size_t pos = 0; pos + 2 < value.size(); ++pos) {
+		if (std::tolower(static_cast<unsigned char>(value[pos])) != 's' ||
+			std::tolower(static_cast<unsigned char>(value[pos + 1])) != 'p' || value[pos + 2] != '.') {
+			continue;
+		}
+		const bool leftBoundary = pos == 0 || std::isspace(static_cast<unsigned char>(value[pos - 1]));
+		const bool rightBoundary = pos + 3 == value.size() || std::isspace(static_cast<unsigned char>(value[pos + 3]));
+		if (leftBoundary && rightBoundary) { return true; }
+	}
+	return false;
+}
+
+inline bool better_blast_hit(const BlastRes& lhs, const BlastRes& rhs) {
+	if (lhs.perID != rhs.perID) { return lhs.perID > rhs.perID; }
+	if (lhs.alLen != rhs.alLen) { return lhs.alLen > rhs.alLen; }
+	if (lhs.queryCoverageKnown != rhs.queryCoverageKnown) { return lhs.queryCoverageKnown; }
+	if (lhs.queryCoverageKnown && lhs.Qcoverage != rhs.Qcoverage) { return lhs.Qcoverage > rhs.Qcoverage; }
+	return lhs.Sbj < rhs.Sbj;
 }
 }
 
@@ -54,10 +110,11 @@ inline bool query_matches_line(const string& line, const string& query) {
 void trim(string& str,
 	const std::string& whitespace)
 {
-	auto strBegin = str.find_first_not_of(whitespace);
-	if (strBegin == std::string::npos)
-		strBegin = 0;
-
+	const auto strBegin = str.find_first_not_of(whitespace);
+	if (strBegin == std::string::npos) {
+		str.clear();
+		return;
+	}
 	const auto strEnd = str.find_last_not_of(whitespace);
 	const auto strRange = strEnd - strBegin + 1;
 
@@ -65,36 +122,39 @@ void trim(string& str,
 }
 
 bool isGZfile(const string fi) {
-	string subst = fi.substr(fi.length() - 3);
-	if (subst == ".gz") {
-		return true;
-	}
-	return false;
+	if (fi.size() < 3) { return false; }
+	string suffix = fi.substr(fi.size() - 3);
+	std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	return suffix == ".gz";
 }
 
 
 
-TaxObj::TaxObj(TaxObj* t):SavedTaxs(t->SavedTaxs), Subj(t->Subj), perID(t->perID),
-speciesUncertain(t->speciesUncertain),depth(t->depth) {
-	;
+TaxObj::TaxObj(const TaxObj* t): SavedTaxs(t->SavedTaxs), Subj(t->Subj), hitDB(t->hitDB),
+	perID(t->perID), repID(t->repID), hasHitDB(t->hasHitDB),
+	speciesUncertain(t->speciesUncertain), depth(t->depth) {
 }
 
 string TaxObj::getWriteString(const vector<double>& ids) {
-   int outDepth = (int)ids.size();
+	int outDepth = (int)ids.size();
 	if (outDepth <= 0) {
 		outDepth = depth;
 	}
 	if (outDepth <= 0) {
 		return "";
 	}
-	string ret(get(0));
-	for (int i = 1; i < outDepth; i++) {
-		string& cur = get(i);
-		if (i >= depth || cur == __unkwnTax || (i < 7 && i < (int)ids.size() && perID < ids[i])) {
-			ret += __defaultTaxSep + __unkwnTaxWR;
-		} else {
-          ret += __defaultTaxSep + cur;
-		}
+	string ret;
+	for (int i = 0; i < outDepth; i++) {
+		const string& cur = get(i);
+		const bool unknown = i >= depth || cur == __unkwnTax ||
+			(i < (int)ids.size() && perID < ids[i]);
+		if (i > 0) { ret += __defaultTaxSep; }
+		ret += unknown ? __unkwnTaxWR : cur;
+	}
+	if (hasHitDB) {
+		ret += __defaultTaxSep + (hitDB.empty() ? __unkwnTaxWR : hitDB);
 	}
 	if (repID) {
 		ret += __defaultTaxSep + to_string(perID);
@@ -104,99 +164,91 @@ string TaxObj::getWriteString(const vector<double>& ids) {
 
 
 
-TaxObj::TaxObj(const string& X,int d, bool nativeSLV, bool doNotCheckTax):
-   SavedTaxs(), Subj(""), perID(0.f), speciesUncertain(false),depth(0){
+TaxObj::TaxObj(const string& X,int d, bool /*nativeSLV*/, bool doNotCheckTax):
+	SavedTaxs(), Subj(""), hitDB(""), perID(0.f), repID(false), hasHitDB(false),
+	speciesUncertain(false), depth(0) {
 	SavedTaxs.reserve(d);
- size_t fnd = nativeSLV ? 0 : X.find("__", 0);
-	if (!nativeSLV) {
-		fnd = (fnd == string::npos) ? string::npos : fnd + 2;
-	}
+	int sequentialRank = 0;
+	size_t tokenBegin = 0;
+	while (tokenBegin <= X.size()) {
+		const size_t separator = X.find(';', tokenBegin);
+		const size_t tokenEnd = separator == string::npos ? X.size() : separator;
+		string token = X.substr(tokenBegin, tokenEnd - tokenBegin);
+		trim(token, " \t\r\n");
 
-	const size_t strL = X.length();
-	int cnt(0);
-	while (fnd != string::npos && cnt < d) {
-		size_t f2 = X.find(";", fnd);
-		size_t end = (f2 == string::npos) ? strL : f2;
+		int rank = sequentialRank;
+		if (token.size() >= 3 && token[1] == '_' && token[2] == '_') {
+			const int prefixedRank = tax_rank_from_prefix(token[0]);
+			if (prefixedRank >= 0) {
+				rank = prefixedRank;
+				token.erase(0, 3);
+				trim(token, " \t\r\n");
+			}
+		}
+		sequentialRank = std::max(sequentialRank + 1, rank + 1);
 
-		size_t begin = fnd;
-		while (begin < end && (X[begin] == ' ' || X[begin] == '\t')) { ++begin; }
-		while (end > begin && (X[end - 1] == ' ' || X[end - 1] == '\t')) { --end; }
-        const size_t tokenLen = end - begin;
+		if (rank >= 0 && rank < d) {
+			const bool taxKnown = !token.empty() &&
+				!iequals_ascii_range(token, 0, token.size(), "unclassified") &&
+				!iequals_ascii_range(token, 0, token.size(), "uncultured bacterium") &&
+				!iequals_ascii_range(token, 0, token.size(), "uncultured") && token != "?";
 
-        bool taxKnown = tokenLen > 0 && !iequals_ascii_range(X, begin, end, "unclassified") && !iequals_ascii_range(X, begin, end, "uncultured bacterium")
-			&& !iequals_ascii_range(X, begin, end, "uncultured") && !(tokenLen == 1 && X[begin] == '?');
-
-		if (taxKnown && cnt == 6) {
-           size_t pos = X.find(' ', begin);
-			if (pos != string::npos && pos < end) {
-				pos = X.find(' ', pos + 1);
-				if (pos == string::npos || pos >= end) {
-					pos = string::npos;
+			if (rank == 6 && !token.empty()) {
+				const bool currentSpeciesUncertain =
+					istarts_with_ascii_range(token, 0, token.size(), "uncultured") ||
+					istarts_with_ascii_range(token, 0, token.size(), "unclassified") ||
+					contains_species_sp_marker(token);
+				speciesUncertain = currentSpeciesUncertain;
+				if (taxKnown && !currentSpeciesUncertain) {
+					const size_t firstSpace = token.find(' ');
+					if (firstSpace != string::npos) {
+						size_t truncateAt = token.find(' ', firstSpace + 1);
+						if (istarts_with_ascii_range(token, 0, token.size(), "candidatus ") && truncateAt != string::npos) {
+							truncateAt = token.find(' ', truncateAt + 1);
+						}
+						if (truncateAt != string::npos) { token.resize(truncateAt); }
+					}
 				}
 			}
-            size_t pos2 = X.find("sp.", begin);
-			if (pos2 == string::npos || pos2 >= end) {
-				pos2 = string::npos;
-			}
-			if (istarts_with_ascii_range(X, begin, end, "uncultured") || istarts_with_ascii_range(X, begin, end, "unclassified")) {
-				speciesUncertain = true;
-           } else if (pos != string::npos && pos2 == pos - 3) {
-				const size_t cmpLen = pos2 - begin - 1;
-              if (cnt > 0 && cnt - 1 < (int)SavedTaxs.size() && SavedTaxs[cnt - 1].size() == cmpLen && SavedTaxs[cnt - 1].compare(0, cmpLen, X, begin, cmpLen) == 0) {
-				speciesUncertain = true;
-              }
-			} else if (pos != string::npos) {
-				end = pos;
+
+			if (doNotCheckTax || taxKnown) {
+				if ((int)SavedTaxs.size() <= rank) { SavedTaxs.resize(rank + 1, __unkwnTax); }
+				SavedTaxs[rank] = token;
+				depth = std::max(depth, rank + 1);
 			}
 		}
 
-		if (doNotCheckTax || taxKnown) {
-			depth = cnt + 1;
-         if ((int)SavedTaxs.size() <= cnt) {
-				SavedTaxs.resize(cnt + 1, __unkwnTax);
-			}
-          SavedTaxs[cnt].assign(X, begin, end - begin);
-		}
-
-		cnt++;
-		if (!nativeSLV) {
-			if (f2 == string::npos) { break; }
-			size_t next = X.find("__", f2);
-			fnd = (next == string::npos) ? string::npos : next + 2;
-		}
-		else {
-			if (f2 == string::npos || f2 + 1 >= strL) { break; }
-			fnd = f2 + 1;
-		}
+		if (separator == string::npos) { break; }
+		tokenBegin = separator + 1;
 	}
-   if ((int)SavedTaxs.size() > depth) {
+	if ((int)SavedTaxs.size() > depth) {
 		SavedTaxs.resize(depth);
 	}
 }
 
-bool TaxObj::evalAcpyTax(TaxObj* oth) {
-	if (perID != 0.f && oth->perID != 0.f) {
-		if (perID > (oth->perID *0.99) ) {
-			return false;
-		}
-		else if ( (oth->perID * 0.985) > (perID ) ) { // real advantage
-			if (oth->depth >= depth) { // also make sure that this is not a hit to "?"
-				copyOver(oth);
-				return true;
-			}
-		}
-	}
-	if (oth->depth > depth) {//replace tax
-		copyOver(oth);
-		return true;
-	}
-	return false;
+bool TaxObj::evalAcpyTax(const TaxObj* oth) {
+	const int knownHere = known_tax_count(*this);
+	const int knownOther = known_tax_count(*oth);
+	const bool sameQuality = knownOther == knownHere && oth->depth == depth && oth->perID == perID;
+	const bool otherBetter = knownOther > knownHere ||
+		(knownOther == knownHere && oth->depth > depth) ||
+		(knownOther == knownHere && oth->depth == depth && oth->perID > perID) ||
+		(sameQuality && oth->speciesUncertain != speciesUncertain && !oth->speciesUncertain) ||
+		(sameQuality && oth->speciesUncertain == speciesUncertain && oth->SavedTaxs < SavedTaxs) ||
+		(sameQuality && oth->speciesUncertain == speciesUncertain && oth->SavedTaxs == SavedTaxs &&
+			oth->hitDB < hitDB);
+	if (!otherBetter) { return false; }
+	copyOver(oth);
+	return true;
 }
 
-void TaxObj::copyOver(TaxObj* oth) {
+void TaxObj::copyOver(const TaxObj* oth) {
 	SavedTaxs = oth->SavedTaxs;
 	depth = oth->depth;
 	perID = oth->perID;
+	speciesUncertain = oth->speciesUncertain;
+	hitDB = oth->hitDB;
+	hasHitDB = oth->hasHitDB;
 }
 
 
@@ -212,22 +264,31 @@ tlevels(tdep,"")
 	string line;
 	ifstream in(inF.c_str());
 	if (!in) { cerr << "Cant open file " << inF << endl; std::exit(11); }
-	int TaxDbl(0), TaxSingl(0);
+	size_t TaxDbl(0), TaxSingl(0), taxLineNumber(0);
 	while (getline(in, line, '\n')) {
+		taxLineNumber++;
+		if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+		if (line.empty() || line[0] == '#') { continue; }
 		size_t dlmt = line.find("\t");
 		if (dlmt == std::string::npos) {
-			cerr << "Line " << line << " does not contain \\t character.. ignoring\n";
-			continue;
+			cerr << "Malformed taxonomy record at line " << taxLineNumber
+				<< ": expected an identifier, a tab, and taxonomy.\n";
+			exit(12);
 		}
 		string ID = line.substr(0, dlmt);
+		if (ID.empty()) {
+			cerr << "Malformed taxonomy record at line " << taxLineNumber
+				<< ": the identifier is empty.\n";
+			exit(12);
+		}
 		//string ttax = line.substr(dlmt+1);
-		TaxObj* t = new TaxObj(line.substr(dlmt + 1),7, nativeSLV, !checktaxStr);
+		TaxObj* t = new TaxObj(line.substr(dlmt + 1), tdep, nativeSLV, !checktaxStr);
 		auto fnd = Tlink.find(ID);
 		if (fnd == Tlink.end()){//all good
 			Tlink[ID] = t; TaxSingl++;
 		} else {//not good: tax is double annotated
-			//cerr << "Tax ID: " << ID << " is double used!\n";
-			//exit(930);
+			// Select the same annotation regardless of duplicate record order.
+			fnd->second->evalAcpyTax(t);
            delete t;
 			TaxDbl++;
 		}
@@ -247,11 +308,16 @@ RefTax::~RefTax()
 	}
 }
 void RefTax::stats() {
-	int cnt = 0; vector<int> hist(10, 0);
+	int cnt = 0;
+	vector<int> hist(tlevels.size() + 1, 0);
 	int maxD = 0;
 	for (auto it = Tlink.begin(); it != Tlink.end(); ++it) {
-		int dep = it->second->depth ; if (maxD < dep) { maxD = dep; }
-		if (dep > 10) { cerr << "Tax depth " << dep << " of object " << it->first << " is too great!\n"; }
+		int dep = it->second->depth;
+		if (dep < 0 || dep >= (int)hist.size()) {
+			cerr << "Tax depth " << dep << " of object " << it->first << " is outside the configured range\n";
+			continue;
+		}
+		if (maxD < dep) { maxD = dep; }
 		hist[dep]++;
 		cnt++;
 	}
@@ -269,83 +335,101 @@ void RefTax::stats() {
 
 BlastRes::BlastRes() :
 	Query(""), Sbj(""), alLen(0), perID(0.f), eval(-1.f), score(0.f),
-	Qcoverage(0.f), fail(true) {
+	Qcoverage(0.f), queryCoverageKnown(false), fail(true) {
 }
 
 BlastRes::BlastRes(const string& line, int inptFmt):
 		Query(""), Sbj(""), alLen(0), perID(0.f), eval(-1.f), score(0.f),
-		Qcoverage(0.f), fail(true) {
+		Qcoverage(0.f), queryCoverageKnown(false), fail(true) {
 	parseFromLine(line, inptFmt);
 }
 
 bool BlastRes::extractQueryToken(const string& line, string& query) {
-	if (line.empty()) { return false; }
-	const size_t sep = line.find('\t');
-	if (sep == string::npos) { return false; }
-	query.assign(line, 0, sep);
+	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	if (fields.empty()) { return false; }
+	query.assign(line, fields[0].first, fields[0].second - fields[0].first);
 	return true;
 }
 
+int BlastRes::supportedColumnCount(const string& line) {
+	int count = 0;
+	size_t pos = 0;
+	while (pos < line.size()) {
+		while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
+		if (pos == line.size()) { break; }
+		++count;
+		if (count > 12) { return 0; }
+		while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
+	}
+	return count == 11 || count == 12 ? count : 0;
+}
+
+bool BlastRes::isColumnHeader(const string& line) {
+	static const char* common[] = {
+		"qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
+		"qstart", "qend", "sstart", "send"
+	};
+	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	if (fields.size() != 11 && fields.size() != 12) { return false; }
+	for (size_t i = 0; i < 10; ++i) {
+		if (!iequals_ascii_range(line, fields[i].first, fields[i].second, common[i])) { return false; }
+	}
+	if (fields.size() == 11) {
+		return iequals_ascii_range(line, fields[10].first, fields[10].second, "qlen");
+	}
+	return iequals_ascii_range(line, fields[10].first, fields[10].second, "evalue") &&
+		iequals_ascii_range(line, fields[11].first, fields[11].second, "bitscore");
+}
+
 bool BlastRes::parseFromLine(const string& line, int inptFmt) {
-	(void)inptFmt;
 	fail = true;
 	Query.clear();
 	Sbj.clear();
 	alLen = 0;
 	perID = 0.0;
+	eval = -1.0;
+	score = 0.0;
 	Qcoverage = 0.f;
+	queryCoverageKnown = false;
 
- if (line.empty()) { return false; }
+	if (inptFmt != 0 || line.empty()) { return false; }
 
-	size_t lineEnd = line.size();
-	if (lineEnd > 0 && line[lineEnd - 1] == '\r') {
-		lineEnd--;
+	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	if (fields.size() != 11 && fields.size() != 12) { return false; }
+	Query.assign(line, fields[0].first, fields[0].second - fields[0].first);
+	Sbj.assign(line, fields[1].first, fields[1].second - fields[1].first);
+	if (Query.empty() || Sbj.empty()) { return false; }
+	if (!parse_double_range(line, fields[2].first, fields[2].second, perID)) { return false; }
+	if (!parse_int_range(line, fields[3].first, fields[3].second, alLen)) { return false; }
+	int mismatches = 0, gaps = 0, qstart = 0, qstop = 0;
+	int sstart = 0, sstop = 0;
+	if (!parse_int_range(line, fields[4].first, fields[4].second, mismatches)) { return false; }
+	if (!parse_int_range(line, fields[5].first, fields[5].second, gaps)) { return false; }
+	if (!parse_int_range(line, fields[6].first, fields[6].second, qstart)) { return false; }
+	if (!parse_int_range(line, fields[7].first, fields[7].second, qstop)) { return false; }
+	if (!parse_int_range(line, fields[8].first, fields[8].second, sstart)) { return false; }
+	if (!parse_int_range(line, fields[9].first, fields[9].second, sstop)) { return false; }
+	if (perID < 0.0 || perID > 100.0 || alLen <= 0 || mismatches < 0 || gaps < 0 ||
+		qstart < 0 || qstop < 0 || sstart < 0 || sstop < 0) {
+		return false;
 	}
-	if (lineEnd == 0) { return false; }
 
-	size_t cursor = 0;
-	size_t begin = 0;
-	size_t end = 0;
-	auto nextField = [&](size_t& outBegin, size_t& outEnd) -> bool {
-     if (cursor > lineEnd) { return false; }
-		outBegin = cursor;
-		outEnd = line.find('\t', cursor);
-       if (outEnd == string::npos || outEnd > lineEnd) {
-			outEnd = lineEnd;
-			cursor = lineEnd + 1;
+	if (fields.size() == 11) {
+		int qlen = 0;
+		if (!parse_int_range(line, fields[10].first, fields[10].second, qlen) ||
+			qlen <= 0 || qstart > qlen || qstop > qlen) {
+			return false;
 		}
-		else {
-			cursor = outEnd + 1;
+		const long long querySpan = std::llabs(static_cast<long long>(qstop) - qstart) + 1;
+		const long long coveredQueryBases = std::min<long long>(querySpan, alLen);
+		Qcoverage = static_cast<float>(std::min(1.0, static_cast<double>(coveredQueryBases) / qlen));
+		queryCoverageKnown = true;
+	} else {
+		if (!parse_double_range(line, fields[10].first, fields[10].second, eval) ||
+			!parse_double_range(line, fields[11].first, fields[11].second, score) ||
+			eval < 0.0 || score < 0.0) {
+			return false;
 		}
-		return outBegin <= outEnd;
-	};
-
-	if (!nextField(begin, end)) { return false; }
-	Query.assign(line, begin, end - begin);
-	if (!nextField(begin, end)) { return false; }
-	Sbj.assign(line, begin, end - begin);
-	if (!nextField(begin, end) || !parse_double_range(line, begin, end, perID)) { return false; }
-	if (!nextField(begin, end) || !parse_int_range(line, begin, end, alLen)) { return false; }
-	//mismatch
-	if (!nextField(begin, end)) { return false; }
-	//inserts
-	if (!nextField(begin, end)) { return false; }
-	//qstart
-	if (!nextField(begin, end)) { return false; }
-	//qstop
-	if (!nextField(begin, end)) { return false; }
-	//sstart
-	if (!nextField(begin, end)) { return false; }
-	//stop
-	if (!nextField(begin, end)) { return false; }
-	//qlen
-	if (!nextField(begin, end)) { return false; }
-	double ql = 0.0;
-	if (!parse_double_range(line, begin, end, ql)) { return false; }
-
-	Qcoverage = 1.f; //could be eval in old m8 format..
-	if (ql > 1) {
-		Qcoverage = static_cast<float>(static_cast<double>(alLen) / ql);
 	}
 	fail = false;
 	return true;
@@ -357,14 +441,15 @@ bool BlastRes::parseFromLine(const string& line, int inptFmt) {
 //*******************************************************
 
 
-BlastReader::BlastReader(const string& inf, const string& inFmt):openedGZ(false), processedBatch(false),
-hasLastBlast(false), blast(NULL), allRead(false), inptFmt(-1), blastCnter(0), lineBuffer(), foundSbjs(), batchBuffer(){
+BlastReader::BlastReader(const string& inf, const string& inFmt): processedBatch(false),
+	hasLastBlast(false), blast(NULL), allRead(false), seenData(false), legacyNoticeShown(false),
+	inptFmt(-1), detectedColumns(0), blastCnter(0), lineNumber(0),
+	lineBuffer(), foundSbjs(), completedQueries(), batchBuffer() {
 #ifdef DEBUG
 	cerr << "ini blast file\n";
 #endif // DEBUG
 
 	if (isGZfile(inf)) {
-		openedGZ = true;
 #ifdef _gzipread
 		blast = new igzstream(inf.c_str(), ios::in);
 #else
@@ -378,11 +463,13 @@ hasLastBlast(false), blast(NULL), allRead(false), inptFmt(-1), blastCnter(0), li
 
 	if (inFmt == "bl8") {
 		inptFmt = 0;
-	} else if (inFmt == "uc") {
-		inptFmt = 1;
+	} else {
+		cerr << "Unsupported input format '" << inFmt << "'. Only the custom bl8 format is supported.\n";
+		exit(26);
 	}
 	lineBuffer.reserve(512);
 	foundSbjs.reserve(256);
+	completedQueries.reserve(1024);
 	batchBuffer.reserve(256);
 
 }
@@ -398,15 +485,45 @@ vector<BlastRes> BlastReader::getResBatch() {
 	batchBuffer.clear();
 	foundSbjs.clear();
 	blastCnter++;
+	auto readRecord = [&](BlastRes& result) -> bool {
+		auto registerColumns = [&](int columns) {
+			if (detectedColumns != 0 && detectedColumns != columns) {
+				cerr << "Inconsistent m8 layout at line " << lineNumber << ": file started with "
+					<< detectedColumns << " columns but this row has " << columns << ".\n";
+				exit(25);
+			}
+			detectedColumns = columns;
+			if (columns == 12 && !legacyNoticeShown) {
+				cerr << "Notice: legacy 12-column BLAST input has no qlen; query-coverage filtering "
+					<< "is skipped for these records.\n";
+				legacyNoticeShown = true;
+			}
+		};
+		while (getline(*blast, lineBuffer, '\n')) {
+			lineNumber++;
+			if (!lineBuffer.empty() && lineBuffer.back() == '\r') { lineBuffer.pop_back(); }
+			const size_t contentStart = lineBuffer.find_first_not_of(" \t\r");
+			if (contentStart == string::npos || lineBuffer[contentStart] == '#') { continue; }
+			const int columns = BlastRes::supportedColumnCount(lineBuffer);
+			if (!seenData && BlastRes::isColumnHeader(lineBuffer)) {
+				registerColumns(columns);
+				continue;
+			}
+			if (columns != 0) { registerColumns(columns); }
+			if (!result.parseFromLine(lineBuffer, inptFmt)) {
+				cerr << "Malformed m8 record at line " << lineNumber
+					<< ". Expected either 11 columns ending in qlen, or the legacy 12-column "
+					<< "BLAST layout ending in evalue and bitscore.\n";
+				exit(25);
+			}
+			seenData = true;
+			return true;
+		}
+		return false;
+	};
 
 	if (!processedBatch) {
-		while (getline(*blast, lineBuffer, '\n')) {
-			if (lineBuffer.empty()) { continue; }
-			if (lastBlast.parseFromLine(lineBuffer, inptFmt)) {
-				hasLastBlast = true;
-				break;
-			}
-		}
+		hasLastBlast = readRecord(lastBlast);
 		processedBatch = true;
 		if (!hasLastBlast) {
 			allRead = true;
@@ -418,32 +535,34 @@ vector<BlastRes> BlastReader::getResBatch() {
 		return batchBuffer;
 	}
 
-   batchBuffer.push_back(lastBlast);
-	foundSbjs.insert(lastBlast.Sbj);
+	batchBuffer.push_back(lastBlast);
+	foundSbjs[lastBlast.Sbj] = 0;
 	const string cmpQu = lastBlast.Query;
 
-	while (getline(*blast, lineBuffer, '\n')) {
-		if (lineBuffer.empty()) { continue; }
-		string lineQuery;
-		if (!BlastRes::extractQueryToken(lineBuffer, lineQuery)) { continue; }
-
-     if (lineQuery != cmpQu) {
-			hasLastBlast = lastBlast.parseFromLine(lineBuffer, inptFmt);
-			if (!hasLastBlast) { continue; }
+	BlastRes cur;
+	while (readRecord(cur)) {
+		if (cur.Query != cmpQu) {
+			completedQueries.insert(cmpQu);
+			if (completedQueries.find(cur.Query) != completedQueries.end()) {
+				cerr << "Query '" << cur.Query << "' occurs in multiple non-contiguous blocks at line "
+					<< lineNumber << ". Sort/group the custom m8 input by query.\n";
+				exit(27);
+			}
+			lastBlast = cur;
+			hasLastBlast = true;
 			return batchBuffer;
 		}
 
-      batchBuffer.emplace_back();
-		BlastRes& cur = batchBuffer.back();
-		if (!cur.parseFromLine(lineBuffer, inptFmt)) {
-			batchBuffer.pop_back();
-			continue;
-		}
-		if (!foundSbjs.insert(cur.Sbj).second) {
-			batchBuffer.pop_back();
+		auto existing = foundSbjs.find(cur.Sbj);
+		if (existing == foundSbjs.end()) {
+			foundSbjs[cur.Sbj] = batchBuffer.size();
+			batchBuffer.push_back(cur);
+		} else if (better_blast_hit(cur, batchBuffer[existing->second])) {
+			batchBuffer[existing->second] = cur;
 		}
 	}
 
+	completedQueries.insert(cmpQu);
 	hasLastBlast = false;
 	allRead = true;
 	return batchBuffer;
