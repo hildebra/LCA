@@ -11,7 +11,8 @@
 //taxonomy/rank and CRLF parsing, query-span coverage, legacy 12-column BLAST input,
 //configurable tdep, strict input,
 //single-thread execution, multi-database reporting, and output error handling.
-const char* LCA_ver = "0.28";
+//0.29: 8.9.26: fixed whitespace parsing bug
+const char* LCA_ver = "0.29";
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";

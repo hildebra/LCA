@@ -50,16 +50,17 @@ inline bool parse_int_range(const string& src, size_t begin, size_t end, int& ou
 	return true;
 }
 
-inline vector<pair<size_t, size_t> > whitespace_fields(const string& line) {
+inline vector<pair<size_t, size_t> > tab_fields(const string& line) {
 	vector<pair<size_t, size_t> > fields;
 	fields.reserve(12);
-	size_t pos = 0;
-	while (pos < line.size()) {
-		while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
-		if (pos == line.size()) { break; }
-		const size_t begin = pos;
-		while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
-		fields.emplace_back(begin, pos);
+	size_t fieldStart = 0;
+	while (fieldStart <= line.size()) {
+		const size_t tabPos = line.find('\t', fieldStart);
+		const size_t fieldEnd = tabPos == string::npos ? line.size() : tabPos;
+		fields.emplace_back(fieldStart, fieldEnd);
+		if (tabPos == string::npos) { break; }
+		fieldStart = tabPos + 1;
+		if (fields.size() > 12) { break; }
 	}
 	return fields;
 }
@@ -345,22 +346,15 @@ BlastRes::BlastRes(const string& line, int inptFmt):
 }
 
 bool BlastRes::extractQueryToken(const string& line, string& query) {
-	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	const vector<pair<size_t, size_t> > fields = tab_fields(line);
 	if (fields.empty()) { return false; }
 	query.assign(line, fields[0].first, fields[0].second - fields[0].first);
 	return true;
 }
 
 int BlastRes::supportedColumnCount(const string& line) {
-	int count = 0;
-	size_t pos = 0;
-	while (pos < line.size()) {
-		while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
-		if (pos == line.size()) { break; }
-		++count;
-		if (count > 12) { return 0; }
-		while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) { ++pos; }
-	}
+	const vector<pair<size_t, size_t> > fields = tab_fields(line);
+	const int count = static_cast<int>(fields.size());
 	return count == 11 || count == 12 ? count : 0;
 }
 
@@ -369,7 +363,7 @@ bool BlastRes::isColumnHeader(const string& line) {
 		"qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
 		"qstart", "qend", "sstart", "send"
 	};
-	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	const vector<pair<size_t, size_t> > fields = tab_fields(line);
 	if (fields.size() != 11 && fields.size() != 12) { return false; }
 	for (size_t i = 0; i < 10; ++i) {
 		if (!iequals_ascii_range(line, fields[i].first, fields[i].second, common[i])) { return false; }
@@ -394,7 +388,7 @@ bool BlastRes::parseFromLine(const string& line, int inptFmt) {
 
 	if (inptFmt != 0 || line.empty()) { return false; }
 
-	const vector<pair<size_t, size_t> > fields = whitespace_fields(line);
+	const vector<pair<size_t, size_t> > fields = tab_fields(line);
 	if (fields.size() != 11 && fields.size() != 12) { return false; }
 	Query.assign(line, fields[0].first, fields[0].second - fields[0].first);
 	Sbj.assign(line, fields[1].first, fields[1].second - fields[1].first);
