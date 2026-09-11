@@ -18,6 +18,13 @@ struct TaxObj
 		depth = t->depth;
 		speciesUncertain = t->speciesUncertain;
 	}
+	void limitByIdentity(double identity, const vector<double>& thresholds) {
+		int eligible = 0;
+		while (eligible < depth && eligible < (int)thresholds.size() && thresholds[eligible] <= identity) {
+			++eligible;
+		}
+		depth = eligible;
+	}
 	void setRepID(bool x) { repID = x; }
 	void makeSpeciesUnknown() {
 		const int speciesRank = 6;
@@ -49,7 +56,7 @@ struct TaxObj
 	vector<string> SavedTaxs;
 	string Subj;
 	string hitDB;
-	float perID;
+	double perID;
 	bool repID;
 	bool hasHitDB;
 	bool speciesUncertain;
@@ -85,6 +92,7 @@ struct BlastRes
     BlastRes();
 	BlastRes(const string&,int);
    bool parseFromLine(const string&, int);
+	bool betterThan(const BlastRes&) const;
 	static bool isColumnHeader(const string&);
 	static int supportedColumnCount(const string&);
 	static bool extractQueryToken(const string&, string&);
@@ -118,7 +126,6 @@ private:
 	int blastCnter;
 	size_t lineNumber;
 	  string lineBuffer;
-	unordered_map<string, size_t> foundSbjs;
 	unordered_set<string> completedQueries;
 	vector<BlastRes> batchBuffer;
 };

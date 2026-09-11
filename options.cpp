@@ -68,7 +68,7 @@ options::options(int argc, char **argv,int defDep):
 	RefTaxFile(""), blastres(""), outF(""), input_format("bl8"), repHitPattern(""),
 	BLfilter(true), calcHighMats(false), hitRD(false), isReads(false),
 	nativeSlVdb(false), reportID(false), reportBestHit(false), checkTaxoUnkw(true),
-	numThr(1), taxDepth(defDep), LCAfract(0.9f), minCover(0.5f), minAliLen(75), idThr(),
+	numThr(1), taxDepth(defDep), LCAfract(0.9), minCover(0.5f), minAliLen(75), idThr(),
 	blFiles(0), refDBs(0), Taxlvls(), version(false)
 {
 	if (defDep <= 0) {

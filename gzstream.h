@@ -34,6 +34,7 @@
 #include <fstream>
 #include <zlib.h>
 #include <string>
+#include <cstring>
 
 #ifdef GZSTREAM_NAMESPACE
 namespace GZSTREAM_NAMESPACE {
@@ -120,8 +121,13 @@ public:
         memcpy( buffer + (4 - n_putback), gptr() - n_putback, n_putback);
         
         int num = gzread( file, buffer+4, bufferSize-4);
-        if (num <= 0) // ERROR or EOF
+        if (num <= 0) {
+            int error = Z_OK;
+            const char* message = gzerror(file, &error);
+            if (num < 0 || (error != Z_OK && error != Z_STREAM_END))
+                throw std::ios_base::failure(message);
             return EOF;
+        }
         
         // reset buffer pointers
         setg( buffer + (4 - n_putback),   // beginning of putback area

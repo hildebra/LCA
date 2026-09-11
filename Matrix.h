@@ -11,6 +11,7 @@ public:
 	Matrix(int depth, vector<string> taxs, bool reportRead);
 	~Matrix();
 	void add(TaxObj*);
+	vector<string> outputPaths(const string&) const;
 	bool writeAllLevels(const string&);
 //vars
 	vector< vector< mat_fl > > mat;

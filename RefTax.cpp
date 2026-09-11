@@ -28,7 +28,13 @@ inline bool istarts_with_ascii_range(const string& src, size_t begin, size_t end
 	return true;
 }
 
+inline void trim_field_range(const string& src, size_t& begin, size_t& end) {
+	while (begin < end && std::isspace(static_cast<unsigned char>(src[begin]))) { ++begin; }
+	while (end > begin && std::isspace(static_cast<unsigned char>(src[end - 1]))) { --end; }
+}
+
 inline bool parse_double_range(const string& src, size_t begin, size_t end, double& out) {
+	trim_field_range(src, begin, end);
 	if (begin >= end) { return false; }
 	const char* first = src.data() + begin;
 	const char* last = src.data() + end;
@@ -39,6 +45,7 @@ inline bool parse_double_range(const string& src, size_t begin, size_t end, doub
 }
 
 inline bool parse_int_range(const string& src, size_t begin, size_t end, int& out) {
+	trim_field_range(src, begin, end);
 	if (begin >= end) { return false; }
 	const char* first = src.data() + begin;
 	const char* last = src.data() + end;
@@ -52,15 +59,13 @@ inline bool parse_int_range(const string& src, size_t begin, size_t end, int& ou
 
 inline vector<pair<size_t, size_t> > tab_fields(const string& line) {
 	vector<pair<size_t, size_t> > fields;
-	fields.reserve(12);
-	size_t fieldStart = 0;
-	while (fieldStart <= line.size()) {
-		const size_t tabPos = line.find('\t', fieldStart);
-		const size_t fieldEnd = tabPos == string::npos ? line.size() : tabPos;
-		fields.emplace_back(fieldStart, fieldEnd);
-		if (tabPos == string::npos) { break; }
-		fieldStart = tabPos + 1;
-		if (fields.size() > 12) { break; }
+	fields.reserve(13);
+	size_t begin = 0;
+	while (begin <= line.size()) {
+		const size_t tab = line.find('\t', begin);
+		fields.emplace_back(begin, tab == string::npos ? line.size() : tab);
+		if (tab == string::npos || fields.size() > 12) { break; }
+		begin = tab + 1;
 	}
 	return fields;
 }
@@ -81,8 +86,11 @@ inline int tax_rank_from_prefix(char rank) {
 }
 
 inline int known_tax_count(const TaxObj& tax) {
-	return static_cast<int>(std::count_if(tax.SavedTaxs.begin(), tax.SavedTaxs.end(),
-		[](const string& value) { return value != __unkwnTax; }));
+	int count = 0;
+	for (int rank = 0; rank < tax.depth; ++rank) {
+		if (tax.get(rank) != __unkwnTax) { ++count; }
+	}
+	return count;
 }
 
 inline bool contains_species_sp_marker(const string& value) {
@@ -96,14 +104,6 @@ inline bool contains_species_sp_marker(const string& value) {
 		if (leftBoundary && rightBoundary) { return true; }
 	}
 	return false;
-}
-
-inline bool better_blast_hit(const BlastRes& lhs, const BlastRes& rhs) {
-	if (lhs.perID != rhs.perID) { return lhs.perID > rhs.perID; }
-	if (lhs.alLen != rhs.alLen) { return lhs.alLen > rhs.alLen; }
-	if (lhs.queryCoverageKnown != rhs.queryCoverageKnown) { return lhs.queryCoverageKnown; }
-	if (lhs.queryCoverageKnown && lhs.Qcoverage != rhs.Qcoverage) { return lhs.Qcoverage > rhs.Qcoverage; }
-	return lhs.Sbj < rhs.Sbj;
 }
 }
 
@@ -294,6 +294,10 @@ tlevels(tdep,"")
 			TaxDbl++;
 		}
 	}
+	if (in.bad() || (in.fail() && !in.eof())) {
+		cerr << "Failed while reading taxonomy file " << inF << endl;
+		exit(13);
+	}
 	//cerr << "C1\n";
 	cout << TaxDbl << " of " << TaxDbl + TaxSingl << " are duplicate entries\n";
 	//cerr << "C2\n";
@@ -334,6 +338,14 @@ void RefTax::stats() {
 //        BlastRes
 //*******************************************************
 
+bool BlastRes::betterThan(const BlastRes& other) const {
+	if (perID != other.perID) { return perID > other.perID; }
+	if (alLen != other.alLen) { return alLen > other.alLen; }
+	if (queryCoverageKnown != other.queryCoverageKnown) { return queryCoverageKnown; }
+	if (queryCoverageKnown && Qcoverage != other.Qcoverage) { return Qcoverage > other.Qcoverage; }
+	return Sbj < other.Sbj;
+}
+
 BlastRes::BlastRes() :
 	Query(""), Sbj(""), alLen(0), perID(0.f), eval(-1.f), score(0.f),
 	Qcoverage(0.f), queryCoverageKnown(false), fail(true) {
@@ -349,7 +361,7 @@ bool BlastRes::extractQueryToken(const string& line, string& query) {
 	const vector<pair<size_t, size_t> > fields = tab_fields(line);
 	if (fields.empty()) { return false; }
 	query.assign(line, fields[0].first, fields[0].second - fields[0].first);
-	return true;
+	return query.find_first_not_of(" \t\r\n\v\f") != string::npos;
 }
 
 int BlastRes::supportedColumnCount(const string& line) {
@@ -363,8 +375,9 @@ bool BlastRes::isColumnHeader(const string& line) {
 		"qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
 		"qstart", "qend", "sstart", "send"
 	};
-	const vector<pair<size_t, size_t> > fields = tab_fields(line);
+	vector<pair<size_t, size_t> > fields = tab_fields(line);
 	if (fields.size() != 11 && fields.size() != 12) { return false; }
+	for (auto& field : fields) { trim_field_range(line, field.first, field.second); }
 	for (size_t i = 0; i < 10; ++i) {
 		if (!iequals_ascii_range(line, fields[i].first, fields[i].second, common[i])) { return false; }
 	}
@@ -392,7 +405,8 @@ bool BlastRes::parseFromLine(const string& line, int inptFmt) {
 	if (fields.size() != 11 && fields.size() != 12) { return false; }
 	Query.assign(line, fields[0].first, fields[0].second - fields[0].first);
 	Sbj.assign(line, fields[1].first, fields[1].second - fields[1].first);
-	if (Query.empty() || Sbj.empty()) { return false; }
+	if (Query.find_first_not_of(" \r\n\v\f") == string::npos ||
+		Sbj.find_first_not_of(" \r\n\v\f") == string::npos) { return false; }
 	if (!parse_double_range(line, fields[2].first, fields[2].second, perID)) { return false; }
 	if (!parse_int_range(line, fields[3].first, fields[3].second, alLen)) { return false; }
 	int mismatches = 0, gaps = 0, qstart = 0, qstop = 0;
@@ -404,7 +418,7 @@ bool BlastRes::parseFromLine(const string& line, int inptFmt) {
 	if (!parse_int_range(line, fields[8].first, fields[8].second, sstart)) { return false; }
 	if (!parse_int_range(line, fields[9].first, fields[9].second, sstop)) { return false; }
 	if (perID < 0.0 || perID > 100.0 || alLen <= 0 || mismatches < 0 || gaps < 0 ||
-		qstart < 0 || qstop < 0 || sstart < 0 || sstop < 0) {
+		qstart <= 0 || qstop <= 0 || sstart <= 0 || sstop <= 0) {
 		return false;
 	}
 
@@ -438,7 +452,7 @@ bool BlastRes::parseFromLine(const string& line, int inptFmt) {
 BlastReader::BlastReader(const string& inf, const string& inFmt): processedBatch(false),
 	hasLastBlast(false), blast(NULL), allRead(false), seenData(false), legacyNoticeShown(false),
 	inptFmt(-1), detectedColumns(0), blastCnter(0), lineNumber(0),
-	lineBuffer(), foundSbjs(), completedQueries(), batchBuffer() {
+	lineBuffer(), completedQueries(), batchBuffer() {
 #ifdef DEBUG
 	cerr << "ini blast file\n";
 #endif // DEBUG
@@ -462,7 +476,6 @@ BlastReader::BlastReader(const string& inf, const string& inFmt): processedBatch
 		exit(26);
 	}
 	lineBuffer.reserve(512);
-	foundSbjs.reserve(256);
 	completedQueries.reserve(1024);
 	batchBuffer.reserve(256);
 
@@ -477,7 +490,6 @@ BlastReader::~BlastReader() {
 
 vector<BlastRes> BlastReader::getResBatch() {
 	batchBuffer.clear();
-	foundSbjs.clear();
 	blastCnter++;
 	auto readRecord = [&](BlastRes& result) -> bool {
 		auto registerColumns = [&](int columns) {
@@ -506,12 +518,16 @@ vector<BlastRes> BlastReader::getResBatch() {
 			if (columns != 0) { registerColumns(columns); }
 			if (!result.parseFromLine(lineBuffer, inptFmt)) {
 				cerr << "Malformed m8 record at line " << lineNumber
-					<< ". Expected either 11 columns ending in qlen, or the legacy 12-column "
+					<< ". Expected tab-separated fields: either 11 columns ending in qlen, or the legacy 12-column "
 					<< "BLAST layout ending in evalue and bitscore.\n";
 				exit(25);
 			}
 			seenData = true;
 			return true;
+		}
+		if (blast->bad() || (blast->fail() && !blast->eof())) {
+			cerr << "Failed while reading blast input after line " << lineNumber << endl;
+			exit(28);
 		}
 		return false;
 	};
@@ -530,7 +546,6 @@ vector<BlastRes> BlastReader::getResBatch() {
 	}
 
 	batchBuffer.push_back(lastBlast);
-	foundSbjs[lastBlast.Sbj] = 0;
 	const string cmpQu = lastBlast.Query;
 
 	BlastRes cur;
@@ -547,13 +562,8 @@ vector<BlastRes> BlastReader::getResBatch() {
 			return batchBuffer;
 		}
 
-		auto existing = foundSbjs.find(cur.Sbj);
-		if (existing == foundSbjs.end()) {
-			foundSbjs[cur.Sbj] = batchBuffer.size();
-			batchBuffer.push_back(cur);
-		} else if (better_blast_hit(cur, batchBuffer[existing->second])) {
-			batchBuffer[existing->second] = cur;
-		}
+		// Eligibility depends on command-line filters, so deduplicate later.
+		batchBuffer.push_back(cur);
 	}
 
 	completedQueries.insert(cmpQu);

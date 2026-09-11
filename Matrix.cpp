@@ -32,9 +32,16 @@ void Matrix::add(TaxObj* t) {
 		}
 	}
 }
+vector<string> Matrix::outputPaths(const string& outF) const {
+	vector<string> paths;
+	for (const auto& level : colIDs) { paths.push_back(outF + "_" + level); }
+	return paths;
+}
+
 bool Matrix::writeAllLevels(const string& outF) {
+	const auto paths = outputPaths(outF);
 	for (size_t DL = 0; DL < rowIDs.size(); DL++) {
-		string outF1 = outF + "_" + colIDs[DL];
+		const string& outF1 = paths[DL];
 		ofstream of(outF1.c_str());
 		if (!of) {
 			cerr << "Could not create matrix output file " << outF1 << endl;
@@ -47,7 +54,7 @@ bool Matrix::writeAllLevels(const string& outF) {
 		for (const auto& row : rows) {
 			of << row.first << __MatSep << row.second << '\n';
 		}
-		of.flush();
+		of.close();
 		if (!of) {
 			cerr << "Failed while writing matrix output file " << outF1 << endl;
 			return false;

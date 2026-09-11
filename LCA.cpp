@@ -4,6 +4,7 @@
 #include "RefTax.h"
 #include "LCAimpl.h"
 #include "Matrix.h"
+#include <filesystem>
 //0.24: fixed bug of not reading "k__?; p__?; c__?; .." strings
 //0.26: 28.3.26: fixed various smallish bugs, including wrongly reported %id in some cases, and some parallelization issues. 
 //0.27: 4.9.26: performance improvements
@@ -12,7 +13,46 @@
 //configurable tdep, strict input,
 //single-thread execution, multi-database reporting, and output error handling.
 //0.29: 8.9.26: fixed whitespace parsing bug
-const char* LCA_ver = "0.29";
+//0.30: 11.9.26: preserve spaces in tab-separated IDs; fix hit selection/filtering,
+//identity/depth consistency, and input/output error handling.
+const char* LCA_ver = "0.30";
+
+namespace {
+bool samePath(const string& first, const string& second) {
+	std::error_code error;
+	if (std::filesystem::equivalent(first, second, error)) { return true; }
+	const auto canonicalFirst = std::filesystem::weakly_canonical(first, error);
+	if (error) { return first == second; }
+	const auto canonicalSecond = std::filesystem::weakly_canonical(second, error);
+	return error ? first == second : canonicalFirst == canonicalSecond;
+}
+
+bool validateOutputPaths(const options& opt, const Matrix& matrix) {
+	vector<string> inputs = opt.blFiles;
+	inputs.insert(inputs.end(), opt.refDBs.begin(), opt.refDBs.end());
+	vector<string> outputs = {opt.outF};
+	if (!opt.repHitPattern.empty()) { outputs.push_back(opt.repHitPattern); }
+	if (opt.calcHighMats) {
+		const auto paths = matrix.outputPaths(opt.outF);
+		outputs.insert(outputs.end(), paths.begin(), paths.end());
+	}
+	for (size_t i = 0; i < outputs.size(); ++i) {
+		for (const auto& input : inputs) {
+			if (samePath(outputs[i], input)) {
+				cerr << "Output path " << outputs[i] << " overlaps input file " << input << endl;
+				return false;
+			}
+		}
+		for (size_t j = 0; j < i; ++j) {
+			if (samePath(outputs[i], outputs[j])) {
+				cerr << "Output paths overlap: " << outputs[i] << " and " << outputs[j] << endl;
+				return false;
+			}
+		}
+	}
+	return true;
+}
+}
 
 void helpMsg() {
 	cout << "LCA requires at least 3 arguments (-i, -r, -o)\n For more help and options, use \"./LCA -h\"\n";
@@ -38,6 +78,7 @@ int main(int argc, char* argv[])
 	const size_t refDbCount = OPT.refDBs.size();
 	const bool highLvl = OPT.calcHighMats;
 	Matrix mat(OPT.taxDepth, OPT.Taxlvls, OPT.hitRD);
+	if (!validateOutputPaths(OPT, mat)) { return 29; }
 	unordered_map<string, TaxObj*> assign;
 	unordered_set<string> inputQueries;
 
@@ -118,13 +159,13 @@ int main(int argc, char* argv[])
 		assign[query] = NULL;
 	}
 
-	O.flush();
+	O.close();
 	if (!O) {
 		cerr << "Failed while writing output file " << OPT.outF << endl;
 		return 32;
 	}
 	if (checkHitPat) {
-		HITPAT.flush();
+		HITPAT.close();
 		if (!HITPAT) {
 			cerr << "Failed while writing hit-pattern file " << OPT.repHitPattern << endl;
 			return 33;
