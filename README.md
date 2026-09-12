@@ -227,3 +227,6 @@ Hildebrand F, Moitinho-Silva L, Blasche S, et al. *Antibiotics-induced monodomin
 ## License
 
 LCA is distributed under the GNU General Public License, version 3. See [LICENSE](LICENSE).
+
+Report bugs and contribute through the [sdm GitHub repository](https://github.com/hildebra/LCA). For questions, contact Falk Hildebrand at `falk.hildebrand@gmail.com`.
+
