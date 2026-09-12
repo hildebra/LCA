@@ -1,5 +1,9 @@
 # LCA
 
+[![Anaconda-Server Badge](https://anaconda.org/bioconda/LCA/badges/downloads.svg)](https://anaconda.org/bioconda/LCA)
+[![Anaconda-Server Badge](https://anaconda.org/bioconda/LCA/badges/latest_release_relative_date.svg)](https://anaconda.org/bioconda/LCA)
+
+
 LCA is a command-line program for assigning taxonomy to sequence reads, operational taxonomic units (OTUs), and amplicon sequence variants (ASVs) from their alignments to a reference database. It combines the reference hits using a least common ancestor approach with a configurable consensus fraction, reporting the deepest supported taxonomy for each query. LCA is used in the LotuS1 - LotuS3 pipeline.
 
 The program takes two inputs: a table of sequence alignments and a table linking reference sequence identifiers to taxonomic lineages. Run your sequence search or alignment tool before running LCA. Outputs include per-query assignments, optional identity and reference-hit columns, and counts at each taxonomic rank.
