@@ -13,7 +13,7 @@ program_LIBRARY_DIRS :=
 program_LIBRARIES :=
 
 CPPFLAGS += -D__USE_XOPEN2K8
-CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20
+CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20 -static
 DEPFLAGS := -MMD -MP
 CPPFLAGS += $(foreach includedir,$(program_INCLUDE_DIRS),-I$(includedir))
 LDFLAGS += $(foreach librarydir,$(program_LIBRARY_DIRS),-L$(librarydir))
