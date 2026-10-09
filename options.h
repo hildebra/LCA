@@ -25,10 +25,10 @@ public:
 	bool reportID; // add column with %id match
 	bool reportBestHit; //reports best hit, if higher than required %id
 	bool checkTaxoUnkw; //check in the tax DB, if unkownn, ? etc levels are there and replaces with ?
-	int numThr; //currently must be 1; retained for command-line compatibility
+	int numThr; //threads for taxonomy loading and assignment (-t); 1 by default
 	int taxDepth; //how deep does the taxonomy go?
 	double LCAfract;
-	float minCover;
+	double minCover;
 	double minAliLen;
 	vector<double> idThr;
 	vector<string> blFiles, refDBs;

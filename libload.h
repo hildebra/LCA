@@ -8,15 +8,10 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
-//#include <iterator>
-#include <map>
-#include <list>
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <ctime>
-#include <random>
-#include <cassert>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -31,9 +26,14 @@
 #endif
 
 using namespace std;
-typedef unsigned int uint;
-typedef unsigned long ulong;
 
+
+// A fatal input error. main() prints the message and exits with the code, after stopping worker
+// threads, so library code never calls exit() while other threads run.
+struct FatalError {
+	int code;
+	string message;
+};
 
 //some static vars..
 enum { __default_depth = 7 };

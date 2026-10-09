@@ -7,7 +7,8 @@ TaxObj* LCA(vector<BlastRes>&, RefTax*, options*);
 //filtering of the blast results
 double filterBlastPrimary(vector<BlastRes>&, options* opt,double&);
 //routine that performs actual LCA matching etc
+TaxObj* LCAcore(const vector<HitLineage>&, bool &hitRd, double LCAfrac=0.9, int tdepth=__default_depth);
 TaxObj* LCAcore(const vector<TaxObj*>&, bool &hitRd, double LCAfrac=0.9, int tdepth=__default_depth);
 
-
-vector<TaxObj*> BlastToTax(const vector<BlastRes>& BR, RefTax* RT, options*, double& consPerID);
+// Reference lineages of the hits, limited by each hit's identity; also returns the mean identity.
+vector<HitLineage> BlastToTax(const vector<BlastRes>& BR, RefTax* RT, options*, double& consPerID);

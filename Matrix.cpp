@@ -2,11 +2,10 @@
 
 
 
-Matrix::Matrix(int depth, vector<string> taxs, bool reportRead):mat(depth), 
+Matrix::Matrix(int depth, vector<string> taxs, bool reportRead):
 		colIDs(taxs), rowIDs(depth), readReport(reportRead)
 {
 	if (readReport){//means that not only species level is reported, but also singular hit (shini table)
-		mat.resize(depth + 1);
 		rowIDs.resize(depth + 1); colIDs.resize(depth + 1, "Hit2DB");
 	}
 }

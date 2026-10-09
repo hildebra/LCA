@@ -50,14 +50,14 @@ void self_help() {
 	cout << "  -no_bl_filter      use only, if custom scripts were used to pre-filter filter -i file and in-built filter should be deactivated\n";
 	cout << "  -readInput         Are the inputs miTags? Default: off (assummes OTUs) \n";
 	cout << "  -LCAfrac           (0-1] fraction of matching known taxonomies required at each level. Default=\"0.9\"\n";
-	cout << "  -t                 retained for compatibility; only -t 1 is supported by this single-threaded build\n";
+	cout << "  -t                 [int] threads for loading the taxonomy and computing assignments; output is identical for any value. Default=1\n";
 	cout << "  -tdep              [int] number of taxonomy levels to read and report. Default=7\n";
-	cout << "  -id                comma-separated min %identity values from the deepest configured rank back to Domain; supply exactly -tdep values. Default=\"97,95,93,91,88,78,0\"\n";
+	cout << "  -id                comma-separated min %identity values (inclusive) from the deepest configured rank back to Domain; supply exactly -tdep values. Default=\"97,95,93,91,88,78,0\"\n";
 	cout << "  -cover             [0-1] query coverage required when qlen is present; skipped for legacy 12-column input. Default=0.5\n";
 	cout << "  -minAlignLen       [int] min num basepairs of hit to accept reported hit. Default=\"75\"\n";
 	cout << "  -SLVfmt            retained for compatibility; rank prefixes are auto-detected. Default: off\n";
 	cout << "  -reportID          append the mean identity of retained LCA hits\n";
-	cout << "  -reportBestHit     report the deterministic best hit and use its complete eligible taxonomy\n";
+	cout << "  -reportBestHit     report the best hit's eligible taxonomy; equally ranked best hits are combined by LCA\n";
 	cout << "  -reportHitPattern  [file] Write a report of best search hits to reproduce Grant et al. (2023) hit patterns for LCA search \n";
 	cout << endl;
 	exit(0);
@@ -127,10 +127,10 @@ options::options(int argc, char **argv,int defDep):
 			repHitPattern = requireValue(i, "-reportHitPattern");
 		else if (!strcmp(argv[i], "-t"))
 		{
+			// Values that are not a positive integer mean one thread, so wrappers passing -t never fail.
 			const char* value = requireValue(i, "-t");
-			if (!parseStrictInt(value, numThr) || numThr != 1) {
-				invalidOptionValue("-t", value, "1 (threading is not enabled in this build)");
-			}
+			int parsed = 0;
+			numThr = parseStrictInt(value, parsed) && parsed > 0 ? std::min(parsed, 256) : 1;
 		}
 		else if (!strcmp(argv[i], "-tdep"))
 		{
@@ -146,7 +146,7 @@ options::options(int argc, char **argv,int defDep):
 			if (!parseStrictDouble(value, parsed) || parsed < 0.0 || parsed > 1.0) {
 				invalidOptionValue("-cover", value, "a finite number from 0 to 1");
 			}
-			minCover = static_cast<float>(parsed);
+			minCover = parsed;
 		}
 		else if (!strcmp(argv[i], "-LCAfrac"))
 		{

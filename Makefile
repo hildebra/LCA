@@ -12,12 +12,13 @@ program_INCLUDE_DIRS :=
 program_LIBRARY_DIRS :=
 program_LIBRARIES :=
 
-CPPFLAGS += -D__USE_XOPEN2K8
-CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20 -static
 DEPFLAGS := -MMD -MP
 CPPFLAGS += $(foreach includedir,$(program_INCLUDE_DIRS),-I$(includedir))
-LDFLAGS += $(foreach librarydir,$(program_LIBRARY_DIRS),-L$(librarydir))
-LDLIBS += $(foreach library,$(program_LIBRARIES),-l$(library)) -lz
+CPPFLAGS += -D__USE_XOPEN2K8
+CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20 -pthread
+LDFLAGS  += -static -pthread
+LDLIBS   += $(foreach library,$(program_LIBRARIES),-l$(library)) -lz -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
+
 
 .PHONY: all check clean distclean
 

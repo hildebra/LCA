@@ -46,8 +46,9 @@ namespace GZSTREAM_NAMESPACE {
 
 class gzstreambuf : public std::streambuf {
 private:
-    static const int bufferSize = 47+256;    // size of data buff
-    // totals 512 bytes under g++ for igzstream at the end.
+    // Large buffers halve decompression time compared with the original 303 bytes and zlib's default 8 KB.
+    static const int bufferSize = 128 * 1024;    // size of data buff
+    static const unsigned zlibBufferSize = 128 * 1024;
 
     gzFile           file;               // file handle for compressed file
     char             buffer[bufferSize]; // data buffer
@@ -94,6 +95,7 @@ public:
         file = gzopen( name, fmode);
         if (file == 0)
             return (gzstreambuf*)0;
+        gzbuffer( file, zlibBufferSize);
         opened = 1;
         return this;
     }

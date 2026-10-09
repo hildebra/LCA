@@ -10,18 +10,30 @@ The program takes two inputs: a table of sequence alignments and a table linking
 
 ## Installation
 
-Build requirements:
+Released versions are available from Bioconda, which can lag behind this repository:
 
-- A C++20 compiler, such as a compatible GCC or Clang installation.
+```sh
+conda install -c bioconda lca
+```
+
+To build from source, you need:
+
+- A C++20 compiler; tested with GCC 13.3 and Clang 18.1 on Linux.
 - GNU Make.
 - zlib headers and library for the default build.
-- Python 3 to run the end-to-end tests; it is not needed to run LCA itself.
+- Perl 5 with `prove` to run the end-to-end tests; it is not needed to run LCA itself.
 
 From the source directory, build the executable and check its version:
 
 ```sh
 make
 ./LCA -v
+```
+
+To build without zlib, and therefore without gzip input support:
+
+```sh
+make CPPFLAGS=-DLCA_NO_GZIP LDLIBS=
 ```
 
 ## Quick example
@@ -98,11 +110,33 @@ Legacy rows have no `qlen`, so query-coverage filtering is skipped, even when `-
 
 Additional requirements:
 
-- All alignments for a query must occur in one contiguous block. Query blocks do not need to be alphabetically sorted, and hits within a block do not need to be ranked. A query that reappears in a later block causes an error.
-- A matching tab-separated column header is optional and must precede the data. Blank lines and comment lines beginning with `#` are ignored.
+- All alignments for a query must occur in one contiguous block. Query blocks do not need to be alphabetically sorted, and hits within a block do not need to be ranked. A query that reappears within the next 100,000 queries causes an error. To bound memory, only the 100,000 most recently completed queries are tracked; a query that reappears later is not detected and receives an additional output row.
+- Matching tab-separated column headers are optional and may appear anywhere, for example in concatenated files. Blank lines and comment lines beginning with `#` are ignored.
 - Spaces in query and subject identifiers are preserved, including Illumina metadata such as `LH00409:413:22WTJGLT4:6:2481:9713:19847 1:N:0:CGTATCTC+CTCGAACA`. Spaces are not field separators.
-- Numeric fields and column-header labels may have surrounding whitespace. CRLF line endings are accepted. Empty required fields, invalid numbers, and extra columns are rejected with a line number.
+- Numeric fields and column-header labels may have surrounding whitespace. CRLF line endings are accepted.
+- Malformed records are skipped with a warning: wrong column counts, a row whose layout differs from earlier records, empty required fields, invalid numbers, or out-of-range values such as the zero coordinates of no-hit placeholder rows. The first five skipped records are listed by line number, followed by a count per file. A file with no valid records causes an error.
 - Mapping files may be plain text or gzip-compressed with a `.gz` extension when gzip support is enabled.
+
+### Producing the alignment table
+
+These commands, as used by LotuS, write the 11-column table and keep each query's hits together. Replace the file names with your own; `reference` is a database made with `makeblastdb`, and `reference.lba.gz` an index made with `lambda3 mkindexn`:
+
+```sh
+blastn -query queries.fasta -db reference -out hits.m8 \
+  -outfmt '6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send qlen'
+```
+
+```sh
+vsearch --usearch_global queries.fasta --db reference.fasta --id 0.75 --maxaccepts 100 \
+  --userfields query+target+id+alnlen+mism+opens+qlo+qhi+tlo+thi+ql --userout hits.m8
+```
+
+```sh
+lambda3 searchn -q queries.fasta -i reference.lba.gz -o hits.m8 \
+  --output-columns 'qseqid sseqid pident length mismatch gapopen qstart qend sstart send qlen'
+```
+
+Report enough hits per query for the consensus to see competing references; LotuS uses 100 to 200. BLAST and VSEARCH report only the first word of each FASTA header by default, so the taxonomy file must use those words as identifiers. Plain `blastn -outfmt 6` output is the 12-column layout and works without query-coverage filtering.
 
 ### Reference taxonomy (`-r`)
 
@@ -112,7 +146,7 @@ Supply an **uncompressed text file** with one reference identifier and one semic
 reference_identifier<TAB>k__Bacteria;p__P;c__C;o__O;f__F;g__Genus;s__Genus alpha
 ```
 
-Replace `<TAB>` with a literal tab. Use no column header. Empty lines and lines starting with `#` are ignored. Reference identifiers, including spaces, must match `sseqid` exactly. Every subject retained after alignment filtering must have a taxonomy entry; a missing entry causes an error.
+Replace `<TAB>` with a literal tab. Use no column header. Empty lines and lines starting with `#` are ignored. Columns after the lineage are ignored with a warning. Lines without an identifier, a tab, and a lineage are skipped with a warning; a file with no valid lines causes an error. Reference identifiers, including spaces, must match `sseqid` exactly. Every subject retained after alignment filtering must have a taxonomy entry; a missing entry causes an error.
 
 By default, LCA reads and reports seven ranks:
 
@@ -126,11 +160,13 @@ By default, LCA reads and reports seven ranks:
 | Genus | `g__` | 95% |
 | Species | `s__` | 97% |
 
-Recognized prefixes assign entries to their explicit ranks, even when ranks are omitted or listed out of order. Unprefixed lineages are also accepted in rank order, starting at Domain; preserve empty positions for missing ranks. Empty names, `?`, `unclassified`, `uncultured`, and `uncultured bacterium` are treated as unknown by default.
+A hit is eligible for a rank when its identity is at least the rank's cutoff. Before version 0.28, the identity had to exceed the cutoff, and `-id` values were truncated to integers; hits at exactly a cutoff, such as 97.0%, are therefore assigned one rank deeper than in earlier versions.
+
+Recognized prefixes assign entries to their explicit ranks, even when ranks are omitted or listed out of order. Unprefixed lineages are also accepted in rank order, starting at Domain; preserve empty positions for missing ranks. Empty names, `?`, `unclassified`, `uncultured`, `uncultured bacterium`, `unknown`, `unidentified`, and `unassigned` are treated as unknown by default, regardless of case.
 
 Use `-tdep 8` to include Strain (`t__`). Additional ranks default to a 97% identity cutoff; custom cutoffs can be supplied with `-id`. Taxonomy beyond the configured depth is ignored.
 
-Species names undergo normalization: ordinary names are shortened to genus and species, with an extra word retained for `Candidatus` names. Names containing a standalone `sp.` or starting with `uncultured` or `unclassified` are treated as uncertain; their species votes can be suppressed when a retained hit supplies a known, certain species.
+Species names undergo normalization: ordinary names are shortened to genus and species, with an extra word retained for `Candidatus` names. Placeholder names are treated as uncertain and are not shortened: names starting with `uncultured` or `unclassified`, or containing any of the words `sp`, `sp.`, `spp`, `spp.`, `cf`, `cf.`, `aff`, `aff.`, `bacterium`, `archaeon`, `metagenome`, `unidentified`, `unknown`, `environmental`, `uncultured`, `unclassified`, or `incertae`, regardless of case. Words are separated by spaces or underscores, so `Lachnospiraceae bacterium 3_1_46FAA` and `Bacteroides_sp._XY1` are placeholders, while GTDB names such as `Bacteroides_A sp000123456` are not. Uncertain species votes are suppressed when a retained hit supplies a known, certain species.
 
 ## Usage and options
 
@@ -144,22 +180,22 @@ Species names undergo normalization: ordinary names are shortened to genus and s
 
 ### Filtering and classification
 
-In normal LCA mode, the program filters alignments by minimum length and query coverage, then applies relative length and identity filters around a selected anchor hit. The relative length cutoff is 85% of the anchor's alignment length; the identity window ranges from 0.05 to 1.5 percentage points depending on anchor identity. The anchor normally favors the highest-identity hit, but may favor an alignment at least 20% longer whose identity is at least 90% of that highest identity.
+In normal LCA mode, the program filters alignments by minimum length and query coverage, then applies relative coverage and identity filters around an anchor hit. The anchor is the highest-identity hit; query coverage, then alignment length, only break identity ties. Retained hits must cover at least 85% as much of the query as the anchor, and their identity must fall within a window of 0.05 to 1.5 percentage points below the anchor, depending on anchor identity. Legacy rows without `qlen` use 85% of the anchor's alignment length instead of coverage.
 
-Duplicate alignments to the same subject are collapsed after filtering, giving each retained subject one vote. Each hit's identity limits its eligible taxonomy depth. Consensus proceeds from Domain toward deeper ranks, requiring the configured fraction of known votes at each rank and retaining only descendants of the accepted parent. The mean identity of retained hits also limits the final reported depth.
+Duplicate alignments to the same subject are collapsed after filtering, giving each retained subject one vote. Each hit's identity limits its eligible taxonomy depth. Consensus proceeds from Domain toward deeper ranks, requiring the configured fraction of known votes at each rank. Hits naming a different taxon at an accepted rank stop voting. Hits without a name at a rank abstain there but still vote at deeper ranks, so lineages with a missing rank, such as an absent order, are resolved the same way for one subject or several, and their matching deeper names are used. The mean identity of retained hits also limits the final reported depth.
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `-minAlignLen N` | `75` | Minimum alignment length; a nonnegative integer. |
 | `-cover F` | `0.5` | Minimum query coverage, from 0 to 1. Applies only to input with `qlen`. |
 | `-LCAfrac F` | `0.9` | Required fraction of matching known taxonomies at each rank; greater than 0 and at most 1. Set to `1` to require all known votes to agree. |
-| `-id LIST` | `97,95,93,91,88,78,0` | Comma-separated identity cutoffs, from the deepest configured rank back to Domain. Supply exactly `-tdep` values, from 0 to 100, in nonincreasing order. |
+| `-id LIST` | `97,95,93,91,88,78,0` | Comma-separated minimum identities (inclusive), from the deepest configured rank back to Domain. Supply exactly `-tdep` values, from 0 to 100, in nonincreasing order; decimals are allowed. |
 | `-tdep N` | `7` | Number of taxonomy ranks to read and report, from 1 to 64. Rank 8 is Strain; later ranks are named `Level9`, `Level10`, etc. |
-| `-no_bl_filter` | Off | Skip minimum length, coverage, and relative alignment filters when input has already been filtered. Subject deduplication and taxonomy identity cutoffs still apply. |
-| `-reportBestHit` | Off | Select one eligible hit instead of computing consensus across subjects. See the cutoff behavior below. |
+| `-no_bl_filter` | Off | Skip minimum length, coverage, and relative coverage and identity filters when input has already been filtered. Subject deduplication and taxonomy identity cutoffs still apply. |
+| `-reportBestHit` | Off | Use the best eligible hit instead of computing consensus across all retained subjects. See the tie and cutoff behavior below. |
 | `-no_taxDB_filter` | Off | Preserve taxonomy strings otherwise recognized as unknown. Rank parsing and species-name normalization still apply. |
 
-**Best-hit mode changes identity cutoffs:** `-reportBestHit` replaces all rank cutoffs with **1%**, overriding any supplied `-id` values. It still applies minimum length and coverage filters unless `-no_bl_filter` is also set. Hits are ranked by higher identity, longer alignment, higher query coverage when available, and finally lexicographically smaller subject identifier. This mode reports the selected hit's eligible lineage and does not use the normal relative alignment filters.
+**Best-hit mode changes identity cutoffs:** `-reportBestHit` replaces all rank cutoffs with **1%**, overriding any supplied `-id` values. It still applies minimum length and coverage filters unless `-no_bl_filter` is also set. Hits are ranked by higher identity, then higher query coverage when available, then longer alignment. This mode reports the best hit's eligible lineage and does not use the normal relative filters. When several subjects tie for best, their lineages are combined by the normal consensus with `-LCAfrac`, so tied subjects of different species are reported at genus.
 
 For example, to require 99% identity at species rank while retaining the other default cutoffs in normal LCA mode:
 
@@ -173,11 +209,11 @@ For example, to require 99% identity at species rank while retaining the other d
 | Option | Description |
 | --- | --- |
 | `-reportID` | Append `%ID`, the arithmetic mean identity of retained subject hits. In best-hit mode, this is the selected hit's identity. |
-| `-showHitRead` | Append `Hit2DB`, the reference identifier when one subject contributes, or `?` when multiple subjects contribute. |
-| `-reportHitPattern FILE` | Write query identifier, mean identity, and eligible taxonomy depth to a separate tab-separated file. |
+| `-showHitRead` | Append `Hit2DB`, the reference identifier when one subject contributes, or `?` when multiple subjects contribute. In best-hit mode with tied subjects, it names the top-ranked tied subject whose lineage contains the reported consensus, lexicographically first among equals. |
+| `-reportHitPattern FILE` | Write query identifier, mean identity (formatted like `%ID`), and eligible taxonomy depth to a separate tab-separated file. |
 | `-matHigh` | Write one lineage-count file per configured taxonomy rank. |
 | `-readInput` | Label the first assignment column `Reads` instead of the default `OTU`; classification and counting are unchanged. |
-| `-t 1` | Compatibility option; only one thread is supported. Other values are rejected. |
+| `-t N` | Threads for loading the reference taxonomy and computing assignments; default 1. Output is identical for any value. Reading the mapping file stays on one thread, so gains level off at about 2-4 threads. Values that are not a positive integer mean one thread. |
 | `-SLVfmt` | Compatibility flag; recognized taxonomy prefixes are automatically detected without it. |
 | `-f bl8` | Compatibility option; `bl8` is the only accepted value and covers both supported mapping layouts. |
 
@@ -209,15 +245,43 @@ To generate these additional reports for the quick example:
   -reportHitPattern example/hit-pattern.tsv
 ```
 
-Output paths must be distinct from all inputs and from one another, including generated count files and existing symbolic or hard-link aliases. Existing output files are overwritten. Input read errors, corrupt gzip streams, and output write failures return a nonzero exit status; a failed run may leave partial output files.
+Output paths must be distinct from all inputs and from one another, including generated count files and existing symbolic or hard-link aliases. Existing output files are overwritten. Input read errors, corrupt gzip streams, and output write failures return a nonzero exit status; a failed run may leave partial output files. Skipped malformed input lines are reported on standard error and do not change the exit status.
+
+## Exit status
+
+LCA exits with 0 on success, including for `-h` and `-v`. Other values identify the problem; the message on standard error gives the details.
+
+| Status | Meaning |
+| --- | --- |
+| 5, 6, 24, 39 | Invalid command line: a required argument is missing, an option is unknown or has an invalid value, the `-i` and `-r` lists differ in length, or the `-id` cutoffs are invalid. |
+| 11, 12, 13, 14 | Taxonomy file: it cannot be opened, has no valid records, cannot be read, or has too many entries. |
+| 23, 25, 27, 28, 50 | Mapping file: it cannot be opened, has no valid records, lists a query in non-contiguous blocks, cannot be read or has corrupt gzip data, or is gzip-compressed in a build without gzip support. |
+| 29-34 | Output: a path overlaps an input or another output, a file cannot be created, or writing failed. |
+| 74 | The subject of a retained hit is missing from the taxonomy file. |
+
+## Performance and memory
+
+- The reference taxonomy needs about 100 bytes of memory per reference, about 100 MB for one million references. With multiple databases, one taxonomy is loaded at a time.
+- `-t N` loads the taxonomy and computes assignments in parallel, and the output does not depend on the thread count. Reading the mapping file stays on one thread, so 2 to 4 threads give most of the gain. In a benchmark with one million references, an ASV run with 20,000 queries took 1.3 s with `-t 2` and 2.0 s with one thread.
+- Pipelines that call LCA, such as LotuS, need to pass `-t` to use threads.
+- Gzip-compressed mapping files are read almost as fast as plain text. Linking against zlib-ng in zlib-compatible mode can speed up decompression further.
+
+## Changes in recent versions
+
+Results can differ from earlier versions for these reasons, described in the sections above:
+
+- 0.28: identity cutoffs are inclusive, and `-id` accepts decimals.
+- 0.31: the highest-identity hit anchors the filters, and the relative filter uses query coverage instead of alignment length; names below a missing rank are used; tied best hits in `-reportBestHit` mode are combined by consensus; more placeholder species names are recognized; malformed input lines are skipped with warnings instead of stopping the run.
+- 0.32: faster input, about 4x less memory, and `-t` threads; assignments are identical to 0.31.
 
 ## Tests
 
-Run the C++ regression suite and the Python end-to-end checks with:
+`make check` builds LCA and runs the C++ unit tests in `tests/regression.cpp` and the end-to-end tests in `tests/cli_regression.t`, which use `prove`:
 
 ```sh
 make check
 ```
+
 ## Citation
 
 If you use LCA, please cite:
@@ -228,5 +292,5 @@ Hildebrand F, Moitinho-Silva L, Blasche S, et al. *Antibiotics-induced monodomin
 
 LCA is distributed under the GNU General Public License, version 3. See [LICENSE](LICENSE).
 
-Report bugs and contribute through the [sdm GitHub repository](https://github.com/hildebra/LCA). For questions, contact Falk Hildebrand at `falk.hildebrand@gmail.com`.
+Report bugs and contribute through the [LCA GitHub repository](https://github.com/hildebra/LCA). For questions, contact Falk Hildebrand at `falk.hildebrand@gmail.com`.
 
