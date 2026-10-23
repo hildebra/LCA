@@ -1,13 +1,30 @@
 #include "../src/LCAimpl.h"
+#include "../src/LCAlib.h"
 #include "../src/Matrix.h"
 #include "../src/Pipeline.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <new>
+#include <numeric>
+#include <random>
+
+// Counts the program's heap allocations, so that a check can tell that a call allocated nothing. Not inlined, so
+// that GCC does not take the malloc and free inside for a mismatch with new and delete (-Wmismatched-new-delete).
+static std::atomic<size_t> heapAllocations{0};
+[[gnu::noinline]] void* operator new(std::size_t size) {
+	++heapAllocations;
+	if (void* memory = std::malloc(size == 0 ? 1 : size)) { return memory; }
+	throw std::bad_alloc();
+}
+[[gnu::noinline]] void operator delete(void* memory) noexcept { std::free(memory); }
+[[gnu::noinline]] void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace {
 int failures = 0;
@@ -729,6 +746,280 @@ void emptyConversion() {
 	const auto noTax = BlastToTax(empty, nullptr, &opt, meanIdentity);
 	check(noTax.empty() && meanIdentity == 0.0, "empty hit conversion must reset the mean without dividing by zero");
 }
+
+lca::Taxonomy mockTaxonomy() {
+	lca::Taxonomy t;
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Mockaceae;g__Mockella;s__Mockella alpha");  // 0
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Mockaceae;g__Mockella;s__Mockella beta");   // 1
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Mockaceae;g__Otherella;s__Otherella one");  // 2
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Mockaceae;g__Mockella");                    // 3: genus record
+	t.AddLineage("k__Alveolata;p__Dinoflagellata");                                                             // 4: a decoy
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Otheraceae;g__Farella;s__Farella far");      // 5
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;f__Gapaceae;g__Gapella;s__Gapella one");                    // 6: no order
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;f__Gapaceae;g__Gapella;s__Gapella two");                    // 7: no order
+	t.AddLineage("d__Bacteria;p__Mockota;c__Mockia;o__Mockales;f__Mockaceae;g__Mockella;s__Mockella sp. X");   // 8
+	return t;
+}
+
+lca::Hit libraryHit(uint32_t subject, double identity, uint32_t align = 150, uint32_t queryLength = 150, uint32_t covered = 150) {
+	return {subject, identity, align, queryLength, covered};
+}
+
+std::string libraryLineage(const lca::Assignment& a, const lca::Taxonomy& t) {
+	std::string text;
+	for (int rank = 0; rank < a.depth; ++rank) { text += (rank == 0 ? "" : ";") + t.Name(a.name_ids[rank]); }
+	return text;
+}
+
+// protal's cases for its stand-in (tests/test_RrnaLca.cpp there), with LCA's results where its rules differ.
+void library() {
+	currentGroup = "library";
+	const lca::Taxonomy t = mockTaxonomy();
+	const lca::Options opt;
+	lca::Scratch s;
+	auto assign = [&](std::vector<lca::Hit> hits, const lca::Options& o) { return lca::Assign(hits, t, o, s); };
+
+	check(t.Size() == 9 && t.Name(t.NameId(0, 0)) == "Bacteria" && t.NameId(0, 0) == t.NameId(5, 0) && t.NameId(3, 6) == 0 &&
+		t.Name(t.NameId(4, 0)) == "Alveolata" && t.NameId(4, 2) == 0 && t.Name(0) == "?" && t.DistinctNames() == 20,
+		"lineages must be stored by index with interned names, k__ read as d__");
+	check(t.SpeciesUncertain(8) && !t.SpeciesUncertain(0), "placeholder species must be marked uncertain");
+	const std::string_view names[] = {"Bacteria", " P ", "unclassified", "", "F", "G", "G alpha strain 1"};
+	lca::Taxonomy added;
+	added.Add(names);
+	check(added.NameId(0, 2) == 0 && added.Name(added.NameId(0, 1)) == "P" && added.Name(added.NameId(0, 6)) == "G alpha",
+		"names added by rank must follow the taxonomy file's naming rules");
+
+	lca::Assignment a = assign({libraryHit(0, 99.3)}, opt);
+	check(a.depth == 7 && libraryLineage(a, t).ends_with(";Mockella alpha") && a.hits_used == 1 && a.mean_identity == 99.3 &&
+		!a.species_uncertain, "one hit at high identity must give its species");
+
+	check(assign({libraryHit(0, 96.0)}, opt).depth == 6 && assign({libraryHit(0, 93.5)}, opt).depth == 5 &&
+		assign({libraryHit(0, 80.0)}, opt).depth == 2, "identity cutoffs must limit the depth");
+	lca::Options yarza;
+	yarza.min_identity = {98.7, 94.5, 86.5, 82, 78.5, 75, 0};
+	check(assign({libraryHit(0, 93.5)}, yarza).depth == 5 && assign({libraryHit(0, 80.0)}, yarza).depth == 3 &&
+		assign({libraryHit(0, 76.0)}, yarza).depth == 2 && assign({libraryHit(0, 98.7)}, yarza).depth == 7,
+		"cutoffs must be read deepest first, inclusive");
+
+	check(libraryLineage(assign({libraryHit(0, 99), libraryHit(1, 99)}, opt), t) ==
+		"Bacteria;Mockota;Mockia;Mockales;Mockaceae;Mockella", "two species of one genus must give the genus");
+	check(assign({libraryHit(0, 99), libraryHit(1, 99), libraryHit(2, 98.98)}, opt).depth == 5,
+		"another genus inside the identity window must give the family");
+	a = assign({libraryHit(0, 99), libraryHit(1, 99), libraryHit(2, 96)}, opt);
+	check(a.depth == 6 && a.hits_used == 2, "hits below the identity window must be left out");
+	check(assign({libraryHit(0, 99), libraryHit(2, 98.75)}, opt).depth == 5 && assign({libraryHit(0, 99), libraryHit(2, 98.74)}, opt).depth == 7,
+		"the identity window at 99% must be 0.25 points, inclusive");
+	check(lca::IdentityWindow(80) == 1.5 && lca::IdentityWindow(96.99) == 1.5 && lca::IdentityWindow(97) == 1.0 &&
+		lca::IdentityWindow(98) == 0.75 && lca::IdentityWindow(99) == 0.25 && lca::IdentityWindow(99.5) == 0.15f &&
+		lca::IdentityWindow(100) == 0.05f, "the identity window must narrow in steps toward 100%");
+	lca::Taxonomy many;
+	for (int i = 0; i < 9; ++i) { many.AddLineage("d__B;p__P;c__C;o__O;f__F;g__G;s__G same"); }
+	many.AddLineage("d__B;p__P;c__C;o__O;f__F;g__G;s__G other");
+	std::vector<lca::Hit> ten;
+	for (uint32_t i = 0; i < 10; ++i) { ten.push_back(libraryHit(i, 99)); }
+	lca::Options strict = opt;
+	strict.lca_frac = 0.95;
+	a = lca::Assign(ten, many, opt, s);
+	check(a.depth == 7 && many.Name(a.name_ids[6]) == "G same" && lca::Assign(ten, many, strict, s).depth == 6,
+		"a rank must need lca_frac of the known votes");
+
+	check(libraryLineage(assign({libraryHit(0, 99), libraryHit(3, 99)}, opt), t).ends_with(";Mockella alpha"),
+		"a hit without a species must abstain there");
+	a = assign({libraryHit(4, 99.5), libraryHit(0, 97)}, opt);
+	check(a.depth == 2 && libraryLineage(a, t) == "Alveolata;Dinoflagellata" && a.hits_used == 1,
+		"a decoy as the best hit must be assigned alone");
+	// Not in the stand-in: a rank no hit names stays unknown, and deeper ranks are still decided.
+	a = assign({libraryHit(6, 99), libraryHit(7, 99)}, opt);
+	check(libraryLineage(a, t) == "Bacteria;Mockota;Mockia;?;Gapaceae;Gapella" && a.name_ids[3] == 0,
+		"ranks below one that no hit names must still be assigned");
+	// Not in the stand-in: placeholder species abstain beside a certain one.
+	a = assign({libraryHit(8, 99), libraryHit(0, 99)}, opt);
+	check(libraryLineage(a, t).ends_with(";Mockella alpha") && !a.species_uncertain, "a certain species must outvote a placeholder");
+	a = assign({libraryHit(8, 99)}, opt);
+	check(libraryLineage(a, t).ends_with(";Mockella sp. X") && a.species_uncertain, "a placeholder species alone must be kept, as uncertain");
+
+	a = assign({libraryHit(0, 99, 60, 150, 60), libraryHit(5, 95, 150, 400, 150)}, opt);
+	check(a.depth == 0 && a.hits_used == 0, "short hits and hits covering too little of the query must be dropped");
+	a = assign({libraryHit(0, 99), libraryHit(0, 98.99), libraryHit(1, 99)}, opt);
+	check(a.hits_used == 2 && a.depth == 6 && a.mean_identity == 99, "one subject aligned twice must be one vote, its best");
+	// 85 of 100 covered bases is kept; as fractions of 113 query bases, 85/113 < 100/113 * 0.85.
+	check(assign({libraryHit(0, 99, 100, 113, 100), libraryHit(2, 99, 85, 113, 85)}, opt).depth == 5 &&
+		assign({libraryHit(0, 99, 100, 113, 100), libraryHit(2, 99, 84, 113, 84)}, opt).depth == 7,
+		"a hit covering exactly 85% of the anchor's query bases must be kept");
+	lca::Options best = opt;
+	best.best_hit = true;
+	// The stand-in kept every hit at the anchor's identity; -reportBestHit keeps those also equal in coverage and length.
+	a = assign({libraryHit(2, 99), libraryHit(0, 99, 150, 150, 140), libraryHit(1, 98.9)}, best);
+	check(a.hits_used == 1 && libraryLineage(a, t).ends_with(";Otherella one"), "best_hit must keep the hits ranking equal to the anchor");
+	a = assign({libraryHit(2, 99), libraryHit(0, 99), libraryHit(1, 98.9)}, best);
+	check(a.hits_used == 2 && libraryLineage(a, t).ends_with(";Mockaceae"), "tied best hits must be combined by consensus");
+	check(assign({libraryHit(99, 99.9), libraryHit(0, 99)}, opt).depth == 7, "hits of subjects outside the taxonomy must be ignored");
+
+	std::vector<lca::Hit> large, small = {libraryHit(8, 99), libraryHit(0, 99)};
+	for (uint32_t subject : {0u, 1u, 2u, 3u, 5u, 6u, 7u, 8u, 0u, 2u}) { large.push_back(libraryHit(subject, 98.5)); }
+	lca::Scratch warm;
+	lca::Assign(large, t, opt, warm);
+	const size_t allocations = heapAllocations;
+	for (int i = 0; i < 100; ++i) {
+		lca::Assign(large, t, opt, warm);
+		lca::Assign(small, t, best, warm);
+	}
+	check(heapAllocations == allocations, "Assign must not allocate once its scratch has grown");
+}
+
+BlastRes subjectHit(int subject, double identity, int alignmentLength, int queryStop, int queryLength) {
+	const std::string id = "s" + std::to_string(subject);
+	if (queryLength > 0) { return hit("q", id.c_str(), identity, alignmentLength, queryStop, queryLength); }
+	std::ostringstream line; // a 12-column BLAST record, without the query length
+	line << "q\t" << id << '\t' << identity << '\t' << alignmentLength << "\t0\t0\t1\t" << queryStop << "\t1\t"
+		<< alignmentLength << "\t1e-30\t100";
+	return BlastRes(line.str(), 0);
+}
+
+// lca::Assign must give the program's assignment: random queries against a random taxonomy, in every mode.
+void libraryMatchesProgram() {
+	currentGroup = "library and program";
+	std::mt19937 random(20261023);
+	auto pick = [&random](int n) { return std::uniform_int_distribution<int>(0, n - 1)(random); };
+	auto chance = [&random](double p) { return std::uniform_real_distribution<double>(0.0, 1.0)(random) < p; };
+
+	// Names from a binary tree, so that subjects share upper ranks and differ below, with missing and unknown ranks,
+	// shortened lineages, placeholder species and species names with extra words.
+	const char* const prefixes[] = {"d__", "p__", "c__", "o__", "f__", "g__", "s__"};
+	const int subjects = 80;
+	std::string text;
+	lca::Taxonomy library;
+	std::vector<int> leaf(subjects);
+	for (int subject = 0; subject < subjects; ++subject) {
+		std::string lineage;
+		const int ranks = chance(0.2) ? 1 + pick(7) : 7;
+		int node = 0;
+		for (int rank = 0; rank < 7; ++rank) {
+			node = node * 2 + pick(2);
+			if (rank >= ranks || chance(0.08)) { continue; }
+			std::string name = "N" + std::to_string(rank) + "x" + std::to_string(node);
+			if (rank == 6) {
+				const std::string genus = "G" + std::to_string(node / 2);
+				const int kind = pick(8);
+				name = kind == 0 ? genus + " sp. " + std::to_string(subject) : kind == 1 ? genus + " bacterium" :
+					kind == 2 ? genus + " e" + std::to_string(node) + " strain " + std::to_string(subject) :
+					kind == 3 ? "Candidatus " + genus + " e" + std::to_string(node) + " x" : genus + " e" + std::to_string(node);
+			}
+			if (chance(0.05)) { name = chance(0.5) ? "?" : "uncultured"; }
+			lineage += (lineage.empty() ? "" : ";") + std::string(prefixes[rank]) + name;
+		}
+		if (lineage.empty()) { lineage = "d__N0x0"; }
+		leaf[subject] = node;
+		text += "s" + std::to_string(subject) + "\t" + lineage + "\n";
+		library.AddLineage(lineage);
+	}
+	TempFile file(text);
+	std::unique_ptr<RefTax> program;
+	{
+		Silence quiet;
+		program = std::make_unique<RefTax>(file.path, 7, false, true);
+	}
+
+	// Each query hits subjects next to each other in the tree, so that its hits share some ranks.
+	std::vector<int> byLeaf(subjects);
+	std::iota(byLeaf.begin(), byLeaf.end(), 0);
+	std::sort(byLeaf.begin(), byLeaf.end(), [&leaf](int a, int b) { return leaf[a] < leaf[b]; });
+	struct Query {
+		std::vector<BlastRes> records;
+		std::vector<lca::Hit> hits;
+	};
+	std::vector<Query> queries(4000);
+	const double tops[] = {100, 99.5, 99.2, 99, 98.4, 98, 97.5, 97, 96, 94.5, 93, 90, 86.5, 82, 78.5, 76};
+	const double steps[] = {0, 0, 0.05, 0.15, 0.25, 0.5, 0.75, 1, 1.5, 2, 3};
+	for (Query& query : queries) {
+		const int first = pick(subjects);
+		const int count = 1 + pick(10);
+		const bool legacy = chance(0.1);
+		const int queryLength = 100 + pick(100);
+		const double top = chance(0.7) ? tops[pick(16)] : 75 + pick(2500) / 100.0;
+		for (int i = 0; i < count; ++i) {
+			const int subject = byLeaf[std::min(subjects - 1, first + pick(6))];
+			const double identity = i == 0 ? top : top - (chance(0.5) ? steps[pick(11)] : pick(300) / 100.0);
+			const int alignmentLength = chance(0.1) ? 40 + pick(40) : 80 + pick(120);
+			const int length = legacy ? 0 : chance(0.05) ? queryLength + 50 : queryLength;
+			const int queryStop = legacy ? alignmentLength : chance(0.8) ? length - pick(20) : 1 + pick(length);
+			const BlastRes record = subjectHit(subject, identity, alignmentLength, queryStop, length);
+			if (record.fail) { continue; }
+			query.records.push_back(record);
+			query.hits.push_back({static_cast<uint32_t>(subject), record.perID, static_cast<uint32_t>(record.alLen),
+				static_cast<uint32_t>(record.queryCoverageKnown ? record.queryLength : 0),
+				static_cast<uint32_t>(record.queryCoverageKnown ? record.queryCovered : 0)});
+		}
+	}
+
+	struct Mode {
+		std::vector<std::string> args;
+		lca::Options library;
+	};
+	lca::Options protal, half, unanimous, unfiltered, bestHit;
+	protal.min_identity = {98.7, 94.5, 86.5, 82, 78.5, 75, 0};
+	protal.min_align_len = 50;
+	half.lca_frac = 0.5;
+	unanimous.lca_frac = 1;
+	unfiltered.no_filters = true;
+	bestHit.best_hit = true;
+	bestHit.min_identity.assign(7, 1.0);
+	lca::Options bestUnfiltered = bestHit;
+	bestUnfiltered.no_filters = true;
+	const Mode modes[] = {
+		{{}, lca::Options()},
+		{{"-id", "98.7,94.5,86.5,82,78.5,75,0", "-minAlignLen", "50", "-cover", "0.5"}, protal},
+		{{"-LCAfrac", "0.5"}, half},
+		{{"-LCAfrac", "1"}, unanimous},
+		{{"-no_bl_filter"}, unfiltered},
+		{{"-reportBestHit"}, bestHit},
+		{{"-reportBestHit", "-no_bl_filter"}, bestUnfiltered},
+	};
+
+	auto programLineage = [](const TaxObj* tax) {
+		std::string text;
+		for (int rank = 0; rank < 7; ++rank) { text += (rank == 0 ? "" : ";") + tax->get(rank); }
+		return text;
+	};
+	auto libraryRanks = [&library](const lca::Assignment& a) {
+		std::string text;
+		for (int rank = 0; rank < 7; ++rank) {
+			text += (rank == 0 ? "" : ";") + (rank < a.depth && a.name_ids[rank] != 0 ? library.Name(a.name_ids[rank]) : __unkwnTax);
+		}
+		return text;
+	};
+	lca::Scratch scratch;
+	int mismatches = 0, placed = 0, species = 0, consensus = 0, gaps = 0, uncertain = 0;
+	for (const Mode& mode : modes) {
+		options opt = makeOptions(mode.args);
+		for (const Query& query : queries) {
+			std::vector<BlastRes> records = query.records; // LCA() leaves the kept subjects' hits
+			std::unique_ptr<TaxObj> expected(LCA(records, program.get(), &opt));
+			const lca::Assignment got = lca::Assign(query.hits, library, mode.library, scratch);
+			const std::string want = expected ? programLineage(expected.get()) : "none";
+			const std::string have = got.hits_used > 0 ? libraryRanks(got) : "none";
+			bool same = want == have && records.size() == got.hits_used && (!expected || expected->perID == got.mean_identity);
+			if (expected && records.size() == 1) {
+				same = same && got.species_uncertain == (expected->speciesUncertain && expected->get(6) != __unkwnTax);
+			}
+			if (!same && mismatches++ < 5) {
+				std::fprintf(stderr, "  mode %zu, %zu hits: program %s (%zu subjects, %f), library %s (%u subjects, %f)\n",
+					static_cast<size_t>(&mode - modes), query.records.size(), want.c_str(), records.size(),
+					expected ? expected->perID : 0.0, have.c_str(), got.hits_used, got.mean_identity);
+			}
+			placed += got.depth > 0;
+			species += got.depth == 7;
+			consensus += got.depth > 0 && got.hits_used > 1;
+			uncertain += got.species_uncertain;
+			for (int rank = 0; rank + 1 < got.depth; ++rank) {
+				if (got.name_ids[rank] == 0) { ++gaps; break; }
+			}
+		}
+	}
+	check(mismatches == 0, "the library must assign every query as the program does");
+	check(placed > 20000 && species > 5000 && consensus > 8000 && gaps > 3000 && uncertain > 1000,
+		"the random queries must reach every rule");
+}
 }
 
 int main() {
@@ -749,6 +1040,8 @@ int main() {
 	endToEnd();
 	matrixCounts();
 	emptyConversion();
+	library();
+	libraryMatchesProgram();
 
 	if (failures != 0) {
 		std::cerr << failures << " regression check(s) failed\n";

@@ -26,7 +26,10 @@
 //recognized; query-block tracking is limited to 100,000 queries.
 //0.32: 9.10.26: faster I/O and parsing, compact taxonomy storage (about 4x less memory), and -t N
 //threads for taxonomy loading and assignment; output is identical to 0.31 for any thread count.
-const char* LCA_ver = "0.32";
+//0.33: 23.10.26: LCAlib.h, the assignment of one query as a header-only library (lca::Assign);
+//the sources moved to src/;
+//output is identical to 0.32.
+const char* LCA_ver = "0.33";
 
 namespace {
 bool samePath(const string& first, const string& second) {

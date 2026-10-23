@@ -266,6 +266,32 @@ LCA exits with 0 on success, including for `-h` and `-v`. Other values identify 
 - Pipelines that call LCA, such as LotuS, need to pass `-t` to use threads.
 - Gzip-compressed mapping files are read almost as fast as plain text. Linking against zlib-ng in zlib-compatible mode can speed up decompression further.
 
+## Using LCA as a library
+
+`src/LCAlib.h` gives a program that holds a query's hits in memory the same assignment that LCA computes from files. It is a single C++20 header that needs only the standard library, so it can be copied into another source tree. protal uses it to place rRNA reads.
+
+```cpp
+#include "LCAlib.h"
+
+lca::Taxonomy tax;  // seven ranks, Domain to Species
+tax.AddLineage("k__Bacteria;p__P;c__C;o__O;f__F;g__Genus;s__Genus alpha");  // subject 0
+tax.AddLineage("k__Bacteria;p__P;c__C;o__O;f__F;g__Genus;s__Genus beta");   // subject 1
+
+lca::Options opt;      // LCA's defaults
+lca::Scratch scratch;  // one per thread, reused for every query
+std::vector<lca::Hit> hits = {{0, 99.0, 100, 100, 100}, {1, 99.0, 100, 100, 100}};
+lca::Assignment a = lca::Assign(hits, tax, opt, scratch);
+// a.depth == 6; tax.Name(a.name_ids[rank]) gives Bacteria ... Genus for rank 0 to 5
+```
+
+- `Taxonomy` stores lineages by subject index, in the order they are added. `AddLineage` reads a lineage as the taxonomy file has it, and `Add` takes names per rank from Domain down, without prefixes. Both apply the naming rules described under [Reference taxonomy](#reference-taxonomy--r), so unknown names become `0` and species names are shortened or marked as placeholders. `NameId(subject, rank)` returns an interned name ID, where `0` means unknown. `Name(id)` returns its text, and `Name(0)` is `?`.
+- `Hit` holds `subject` (the index into the taxonomy), `identity` in percent, `align_len`, `query_len` and `query_covered`. A `query_len` of 0 means the query length is unknown, as in 12-column BLAST input; the coverage filter is then skipped. Several hits may share a subject. Hits of subjects outside the taxonomy are ignored.
+- `Options` mirrors the command-line options: `min_identity` (`-id`, deepest rank first), `lca_frac` (`-LCAfrac`), `min_align_len` (`-minAlignLen`), `min_cover` (`-cover`), `best_hit` (`-reportBestHit`), `no_filters` (`-no_bl_filter`) and `depth` (`-tdep`). Unlike `-reportBestHit`, `best_hit` keeps the supplied cutoffs; set every `min_identity` to 1 to match the program.
+- `Assignment` reports `depth`, the number of ranks assigned from Domain down, ending at the deepest named rank. It also reports `name_ids` per rank, where `0` marks a rank that no retained hit names, and `mean_identity` (as `%ID`). `hits_used` is the number of retained subjects; 0 means no hit passed the filters, where the program writes no row. `species_uncertain` is set when the assigned species is a placeholder name.
+- A `Taxonomy` is read-only once built, so any number of threads can call `Assign` with it at the same time, each with its own `Scratch`. `Assign` allocates no memory once its `Scratch` has grown to the largest query.
+
+`make check` compares the library with the program on random queries in every filtering mode, so a change to the rules in `src/LCAimpl.cpp` must be made in `src/LCAlib.h` as well.
+
 ## Changes in recent versions
 
 Results can differ from earlier versions for these reasons, described in the sections above:
@@ -273,6 +299,7 @@ Results can differ from earlier versions for these reasons, described in the sec
 - 0.28: identity cutoffs are inclusive, and `-id` accepts decimals.
 - 0.31: the highest-identity hit anchors the filters, and the relative filter uses query coverage instead of alignment length; names below a missing rank are used; tied best hits in `-reportBestHit` mode are combined by consensus; more placeholder species names are recognized; malformed input lines are skipped with warnings instead of stopping the run.
 - 0.32: faster input, about 4x less memory, and `-t` threads; assignments are identical to 0.31.
+- 0.33: `src/LCAlib.h` provides the assignment as a library, and the sources moved to `src/`; the program's output is identical to 0.32.
 
 ## Tests
 
@@ -290,7 +317,7 @@ Hildebrand F, Moitinho-Silva L, Blasche S, et al. *Antibiotics-induced monodomin
 
 ## License
 
-LCA is distributed under the GNU General Public License, version 3. See [LICENSE](LICENSE).
+LCA is distributed under the GNU General Public License, version 2 (GPL-2.0-only). See [LICENSE](LICENSE).
 
 Report bugs and contribute through the [LCA GitHub repository](https://github.com/hildebra/LCA). For questions, contact Falk Hildebrand at `falk.hildebrand@gmail.com`.
 

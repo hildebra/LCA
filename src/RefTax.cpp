@@ -1,4 +1,5 @@
 #include "RefTax.h"
+#include "LCAlib.h"
 #include "Pipeline.h"
 #include <cerrno>
 #include <cctype>
@@ -8,32 +9,10 @@
 #include <limits>
 
 namespace {
-inline bool iequals_ascii(std::string_view value, const char* txt) {
-	size_t i = 0;
-	for (; txt[i] != '\0'; ++i) {
-		if (i >= value.size()) { return false; }
-		if (std::tolower(static_cast<unsigned char>(value[i])) != std::tolower(static_cast<unsigned char>(txt[i]))) {
-			return false;
-		}
-	}
-	return i == value.size();
-}
-
-inline bool istarts_with_ascii(std::string_view value, const char* txt) {
-	for (size_t i = 0; txt[i] != '\0'; ++i) {
-		if (i >= value.size()) { return false; }
-		if (std::tolower(static_cast<unsigned char>(value[i])) != std::tolower(static_cast<unsigned char>(txt[i]))) {
-			return false;
-		}
-	}
-	return true;
-}
-
-inline std::string_view trim_view(std::string_view value, const char* whitespace) {
-	const size_t begin = value.find_first_not_of(whitespace);
-	if (begin == std::string_view::npos) { return std::string_view(); }
-	return value.substr(begin, value.find_last_not_of(whitespace) - begin + 1);
-}
+// Taxonomy naming rules, shared with the library.
+using lca::iequals_ascii;
+using lca::LineageViews;
+using lca::parseLineage;
 
 inline std::string_view field_view(const string& line, const std::pair<size_t, size_t>& span) {
 	return std::string_view(line).substr(span.first, span.second - span.first);
@@ -77,21 +56,6 @@ inline bool parse_int(std::string_view text, int& out) {
 	return error == std::errc() && end == text.data() + text.size();
 }
 
-inline int tax_rank_from_prefix(char rank) {
-	switch (std::tolower(static_cast<unsigned char>(rank))) {
-	case 'd':
-	case 'k': return 0;
-	case 'p': return 1;
-	case 'c': return 2;
-	case 'o': return 3;
-	case 'f': return 4;
-	case 'g': return 5;
-	case 's': return 6;
-	case 't': return 7;
-	default: return -1;
-	}
-}
-
 inline int known_tax_count(const TaxObj& tax) {
 	int count = 0;
 	for (int rank = 0; rank < tax.depth; ++rank) {
@@ -108,104 +72,6 @@ inline int compare_visible_lineage(const TaxObj& a, const TaxObj& b) {
 		if (order != 0) { return order; }
 	}
 	return 0;
-}
-
-inline bool is_name_separator(char c) {
-	return c == '_' || std::isspace(static_cast<unsigned char>(c));
-}
-
-// Species names that do not identify a species, e.g. "Genus sp. X", "Lachnospiraceae bacterium 3_1",
-// "gut metagenome". Markers must be whole words; spaces and underscores separate words.
-inline bool species_name_is_placeholder(std::string_view value) {
-	static const char* const markers[] = {
-		"sp", "sp.", "spp", "spp.", "cf", "cf.", "aff", "aff.", "bacterium", "archaeon", "metagenome",
-		"unidentified", "unknown", "environmental", "uncultured", "unclassified", "incertae"
-	};
-	if (istarts_with_ascii(value, "uncultured") || istarts_with_ascii(value, "unclassified")) {
-		return true;
-	}
-	size_t begin = 0;
-	while (begin < value.size()) {
-		while (begin < value.size() && is_name_separator(value[begin])) { ++begin; }
-		size_t end = begin;
-		while (end < value.size() && !is_name_separator(value[end])) { ++end; }
-		if (end > begin) {
-			const std::string_view word = value.substr(begin, end - begin);
-			for (const char* marker : markers) {
-				if (iequals_ascii(word, marker)) { return true; }
-			}
-		}
-		begin = end;
-	}
-	return false;
-}
-
-inline bool is_unknown_taxon_name(std::string_view token) {
-	static const char* const unknownNames[] = {
-		"unclassified", "uncultured", "uncultured bacterium", "unknown", "unidentified", "unassigned"
-	};
-	if (token.empty() || token == "?") { return true; }
-	for (const char* name : unknownNames) {
-		if (iequals_ascii(token, name)) { return true; }
-	}
-	return false;
-}
-
-// Rank names of one lineage as views into its text; an empty view is an unknown rank.
-struct LineageViews {
-	vector<std::string_view> ranks;
-	int depth = 0;
-	bool speciesUncertain = false;
-};
-
-void parseLineage(std::string_view X, int d, bool doNotCheckTax, LineageViews& out) {
-	out.ranks.assign(static_cast<size_t>(d), std::string_view());
-	out.depth = 0;
-	out.speciesUncertain = false;
-	int sequentialRank = 0;
-	size_t tokenBegin = 0;
-	while (tokenBegin <= X.size()) {
-		const size_t separator = X.find(';', tokenBegin);
-		const size_t tokenEnd = separator == std::string_view::npos ? X.size() : separator;
-		std::string_view token = trim_view(X.substr(tokenBegin, tokenEnd - tokenBegin), " \t\r\n");
-
-		int rank = sequentialRank;
-		if (token.size() >= 3 && token[1] == '_' && token[2] == '_') {
-			const int prefixedRank = tax_rank_from_prefix(token[0]);
-			if (prefixedRank >= 0) {
-				rank = prefixedRank;
-				token = trim_view(token.substr(3), " \t\r\n");
-			}
-		}
-		sequentialRank = std::max(sequentialRank + 1, rank + 1);
-
-		if (rank >= 0 && rank < d) {
-			const bool taxKnown = !is_unknown_taxon_name(token);
-
-			if (rank == 6 && !token.empty()) {
-				const bool currentSpeciesUncertain = species_name_is_placeholder(token);
-				out.speciesUncertain = currentSpeciesUncertain;
-				if (taxKnown && !currentSpeciesUncertain) {
-					const size_t firstSpace = token.find(' ');
-					if (firstSpace != std::string_view::npos) {
-						size_t truncateAt = token.find(' ', firstSpace + 1);
-						if (istarts_with_ascii(token, "candidatus ") && truncateAt != std::string_view::npos) {
-							truncateAt = token.find(' ', truncateAt + 1);
-						}
-						if (truncateAt != std::string_view::npos) { token = token.substr(0, truncateAt); }
-					}
-				}
-			}
-
-			if (doNotCheckTax || taxKnown) {
-				out.ranks[rank] = token;
-				out.depth = std::max(out.depth, rank + 1);
-			}
-		}
-
-		if (separator == std::string_view::npos) { break; }
-		tokenBegin = separator + 1;
-	}
 }
 
 // A block of complete taxonomy lines, and the line number of its first line.

@@ -1,4 +1,5 @@
 #include "LCAimpl.h"
+#include "LCAlib.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -149,6 +150,8 @@ TaxObj* consensusLineage(const vector<Lineage>& TO, bool& hitRd, double LCAfrac,
 }
 }
 
+// lca::Assign (LCAlib.h) applies the same rules to hits held in memory; tests/regression.cpp checks that both agree,
+// so a change of rules here belongs there as well.
 TaxObj* LCA(vector<BlastRes>& BR, RefTax* RT, options* opt) {
 	if (BR.size() == 0) { return NULL; }
 
@@ -231,17 +234,9 @@ double filterBlastPrimary(vector<BlastRes>& BR, options* opt, double& bestID) {
 		return score;
 	}
 
-	//filter parameters
-	const double relativeCoverage(0.85);
-	double tolerance(1.5);
-	if (bestID >= 100) { tolerance = 0.05f; }
-	else if (bestID >= 99.5) { tolerance = 0.15f; }
-	else if (bestID >= 99) { tolerance = 0.25f; }
-	else if (bestID >= 98) { tolerance = 0.75f; }
-	else if (bestID >= 97) { tolerance = 1.0f; }
-
+	const double tolerance = lca::IdentityWindow(bestID);
 	BR.erase(std::remove_if(BR.begin(), BR.end(), [&](const BlastRes& cur) {
-		return (cur.perID + tolerance) < bestID || !coversEnoughRelativeTo(cur, anchor, relativeCoverage);
+		return (cur.perID + tolerance) < bestID || !coversEnoughRelativeTo(cur, anchor, lca::kRelativeCover);
 	}), BR.end());
 	// Only surviving alignments may represent a subject in the LCA vote.
 	deduplicateBlastHits(BR);
