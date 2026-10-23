@@ -3,8 +3,8 @@
 
 program_NAME := LCA
 PROVE ?= prove
-program_C_SRCS := $(wildcard *.c)
-program_CXX_SRCS := $(wildcard *.cpp)
+program_C_SRCS := $(wildcard src/*.c)
+program_CXX_SRCS := $(wildcard src/*.cpp)
 program_C_OBJS := ${program_C_SRCS:.c=.o}
 program_CXX_OBJS := ${program_CXX_SRCS:.cpp=.o}
 program_OBJS := $(program_C_OBJS) $(program_CXX_OBJS)
@@ -27,8 +27,11 @@ check: $(program_NAME) tests/regression
 	./tests/regression
 	LCA_BIN=./$(program_NAME) $(PROVE) tests/cli_regression.t
 
-tests/regression: tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp Matrix.cpp LCAimpl.h RefTax.h options.h Matrix.h Pipeline.h libload.h gzstream.h
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp Matrix.cpp $(LDFLAGS) $(LDLIBS) -o $@
+# The unit tests link every source but the program's main().
+test_SRCS := $(filter-out src/LCA.cpp,$(program_CXX_SRCS))
+
+tests/regression: tests/regression.cpp $(test_SRCS) $(wildcard src/*.h)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/regression.cpp $(test_SRCS) $(LDFLAGS) $(LDLIBS) -o $@
 
 %.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@

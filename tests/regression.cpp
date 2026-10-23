@@ -1,6 +1,6 @@
-#include "../LCAimpl.h"
-#include "../Matrix.h"
-#include "../Pipeline.h"
+#include "../src/LCAimpl.h"
+#include "../src/Matrix.h"
+#include "../src/Pipeline.h"
 
 #include <chrono>
 #include <cmath>

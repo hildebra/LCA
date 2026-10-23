@@ -2,3 +2,5 @@
 AUDIT.md
 *.o
 LCA
+*.d
+tests/regression
