@@ -2,6 +2,7 @@
 # modified by Falk Hildebrand
 
 program_NAME := LCA
+PROVE ?= prove
 program_C_SRCS := $(wildcard *.c)
 program_CXX_SRCS := $(wildcard *.cpp)
 program_C_OBJS := ${program_C_SRCS:.c=.o}
@@ -12,23 +13,22 @@ program_INCLUDE_DIRS :=
 program_LIBRARY_DIRS :=
 program_LIBRARIES :=
 
+CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20 -pthread
 DEPFLAGS := -MMD -MP
 CPPFLAGS += $(foreach includedir,$(program_INCLUDE_DIRS),-I$(includedir))
-CPPFLAGS += -D__USE_XOPEN2K8
-CXXFLAGS += -Wall -Wextra -Wpedantic -O3 -std=c++20 -pthread
-LDFLAGS  += -static -pthread
-LDLIBS   += $(foreach library,$(program_LIBRARIES),-l$(library)) -lz -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
-
+LDFLAGS += $(foreach librarydir,$(program_LIBRARY_DIRS),-L$(librarydir))
+LDLIBS += $(foreach library,$(program_LIBRARIES),-l$(library)) -lz
 
 .PHONY: all check clean distclean
 
 all: $(program_NAME)
 
-check: tests/regression
+check: $(program_NAME) tests/regression
 	./tests/regression
+	LCA_BIN=./$(program_NAME) $(PROVE) tests/cli_regression.t
 
-tests/regression: tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp LCAimpl.h RefTax.h options.h libload.h
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp $(LDLIBS) -o $@
+tests/regression: tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp Matrix.cpp LCAimpl.h RefTax.h options.h Matrix.h Pipeline.h libload.h gzstream.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/regression.cpp LCAimpl.cpp RefTax.cpp options.cpp Matrix.cpp $(LDFLAGS) $(LDLIBS) -o $@
 
 %.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
