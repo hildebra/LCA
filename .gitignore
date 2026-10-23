@@ -1,6 +1,13 @@
-
-AUDIT.md
+# Build output
 *.o
-LCA
 *.d
-tests/regression
+/LCA
+/LCA.exe
+/tests/regression
+/tests/regression.exe
+
+# Written by the quick example in README.md
+/example/
+
+# Kept out of the repository
+AUDIT.md
