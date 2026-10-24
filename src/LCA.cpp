@@ -31,7 +31,11 @@
 //output is identical to 0.32.
 //0.34: 24.10.26: LCAlib.h saves and rebuilds a Taxonomy (Taxonomy::Parts, Taxonomy::FromParts,
 //kNamingRulesVersion); output is identical to 0.33.
-const char* LCA_ver = "0.34";
+//0.35: 24.10.26: a rank with exactly the -LCAfrac share of votes is assigned at every vote count (rounding
+//rejected e.g. 14 of 25 at 0.56), also by lca::Assign; taxonomy lines with a blank lineage are skipped, and a
+//taxonomy without valid lines fails with exit 12; assignments point to rank names in a NamePool shared by all
+//databases, which halves the memory of multi-database runs.
+const char* LCA_ver = "0.35";
 
 namespace {
 bool samePath(const string& first, const string& second) {
@@ -93,7 +97,10 @@ int runLCA(options& OPT) {
 	const bool highLvl = OPT.calcHighMats;
 	Matrix mat(OPT.taxDepth, OPT.Taxlvls, OPT.hitRD);
 	if (!validateOutputPaths(OPT, mat)) { return 29; }
-	unordered_map<string, TaxObj*> assign;
+	// Rank names of every database; assignments point into it, so it outlives each RefTax.
+	NamePool names;
+	// With several databases, the best assignment of each query so far, keyed by a view of its query name.
+	unordered_map<std::string_view, TaxObj*> assign;
 	size_t queriesRead = 0;
 
 	const string IDname = OPT.isReads ? "Reads" : "OTU";
@@ -129,7 +136,7 @@ int runLCA(options& OPT) {
 	size_t taxWritten = 0;
 	const bool multiDBuse = refDbCount > 1;
 	for (size_t xi = 0; xi < refDbCount; xi++) {
-		RefTax RT(OPT.refDBs[xi], OPT.taxDepth, OPT.nativeSlVdb, OPT.checkTaxoUnkw, OPT.numThr);
+		RefTax RT(OPT.refDBs[xi], names, OPT.taxDepth, OPT.nativeSlVdb, OPT.checkTaxoUnkw, OPT.numThr);
 		RT.setTaxLvls(OPT.Taxlvls);
 		BlastReader BR(OPT.blFiles[xi], OPT.input_format);
 
@@ -187,7 +194,7 @@ int runLCA(options& OPT) {
 				}
 				auto previous = assign.find(result->Subj);
 				if (previous == assign.end()) {
-					assign[result->Subj] = result;
+					assign.emplace(result->Subj, result);
 				} else {
 					duplicateQueries++;
 					if (previous->second->evalAcpyTax(result)) { reassignedQueries++; }
@@ -202,12 +209,12 @@ int runLCA(options& OPT) {
 		cout << "Done Blast File reading (" << BR.queriesRead() << " queries)\n";
 	}
 
-	vector<string> orderedQueries;
-	orderedQueries.reserve(assign.size());
-	for (const auto& entry : assign) { orderedQueries.push_back(entry.first); }
-	std::sort(orderedQueries.begin(), orderedQueries.end());
-	for (const auto& query : orderedQueries) {
-		TaxObj* result = assign[query];
+	vector<TaxObj*> ordered;
+	ordered.reserve(assign.size());
+	for (const auto& entry : assign) { ordered.push_back(entry.second); }
+	assign.clear(); // its keys view the query names deleted below
+	std::sort(ordered.begin(), ordered.end(), [](const TaxObj* a, const TaxObj* b) { return a->Subj < b->Subj; });
+	for (TaxObj* result : ordered) {
 		O << result->Subj << '\t' << result->getWriteString(OPT.idThr) << '\n';
 		if (checkHitPat) {
 			HITPAT << result->Subj << '\t' << to_string(result->perID) << '\t' << result->depth << '\n';
@@ -215,7 +222,6 @@ int runLCA(options& OPT) {
 		taxWritten++;
 		if (highLvl) { mat.add(result); }
 		delete result;
-		assign[query] = NULL;
 	}
 
 	O.close();

@@ -54,11 +54,15 @@ options makeOptions(std::vector<std::string> extra = {}) {
 	return options(static_cast<int>(argv.size()), argv.data(), 7);
 }
 
+// Rank names of the TaxObjs and RefTaxes built here; TaxObjs point into it, so it lives as long as the tests.
+NamePool testNames;
+const std::string* nameOf(std::string_view name) { return &testNames.name(testNames.intern(name)); }
+
 TaxObj* lineageOf(std::initializer_list<const char*> ranks) {
 	TaxObj* tax = new TaxObj(7);
 	int rank = 0;
 	for (const char* name : ranks) {
-		if (*name != '\0') { tax->set(rank, name); }
+		if (*name != '\0') { tax->set(rank, nameOf(name)); }
 		++rank;
 	}
 	return tax;
@@ -93,53 +97,53 @@ struct TempFile {
 
 void taxonomyParsing() {
 	currentGroup = "taxonomy parsing";
-	TaxObj prefixed("s__Genus sp.;k__Bacteria;g__Genus", 7, false, false);
+	TaxObj prefixed("s__Genus sp.;k__Bacteria;g__Genus", 7, false, false, testNames);
 	check(prefixed.get(0) == "Bacteria", "k__ must map to Domain even after s__");
 	check(prefixed.get(5) == "Genus", "g__ must map to Genus even after s__");
 	check(prefixed.get(6) == "Genus sp.", "s__ must map to Species");
 	check(prefixed.speciesUncertain, "a species containing sp. must be marked uncertain");
 
-	TaxObj unprefixed("Bacteria;P;;O;F;G;Genus species", 7, false, false);
+	TaxObj unprefixed("Bacteria;P;;O;F;G;Genus species", 7, false, false, testNames);
 	check(unprefixed.get(2) == __unkwnTax && unprefixed.get(3) == "O" && unprefixed.depth == 7,
 		"empty positions in unprefixed lineages must keep later ranks in place");
-	TaxObj padded(" k__ Bacteria ; p__ P ;", 7, false, false);
+	TaxObj padded(" k__ Bacteria ; p__ P ;", 7, false, false, testNames);
 	check(padded.get(0) == "Bacteria" && padded.get(1) == "P" && padded.depth == 2,
 		"whitespace around names and a trailing separator must be ignored");
-	TaxObj upper("D__Bacteria;P__Firmicutes", 7, false, false);
+	TaxObj upper("D__Bacteria;P__Firmicutes", 7, false, false, testNames);
 	check(upper.get(0) == "Bacteria" && upper.get(1) == "Firmicutes", "rank prefixes must be case-insensitive");
-	TaxObj kept("k__Bacteria;g__uncultured", 7, false, true);
-	TaxObj filtered("k__Bacteria;g__uncultured", 7, false, false);
+	TaxObj kept("k__Bacteria;g__uncultured", 7, false, true, testNames);
+	TaxObj filtered("k__Bacteria;g__uncultured", 7, false, false, testNames);
 	check(kept.get(5) == "uncultured" && filtered.get(5) == __unkwnTax && filtered.depth == 1,
 		"-no_taxDB_filter must keep names that are otherwise treated as unknown");
-	TaxObj unknownGenus("k__Bacteria;p__P;g__Unknown;s__Unidentified", 7, false, false);
+	TaxObj unknownGenus("k__Bacteria;p__P;g__Unknown;s__Unidentified", 7, false, false, testNames);
 	check(unknownGenus.get(5) == __unkwnTax && unknownGenus.get(6) == __unkwnTax && unknownGenus.depth == 2,
 		"unknown and unidentified rank names must be treated as missing");
-	TaxObj strain8("k__Bacteria;s__Genus species;t__strain X", 8, false, false);
-	TaxObj strain7("k__Bacteria;s__Genus species;t__strain X", 7, false, false);
+	TaxObj strain8("k__Bacteria;s__Genus species;t__strain X", 8, false, false, testNames);
+	TaxObj strain7("k__Bacteria;s__Genus species;t__strain X", 7, false, false, testNames);
 	check(strain8.get(7) == "strain X" && strain7.depth == 7, "t__ must be read only when Strain is configured");
 }
 
 void speciesNames() {
 	currentGroup = "species names";
 	TaxObj candidatus("k__Bacteria;p__P;c__C;o__O;f__F;g__Liberibacter;s__Candidatus Liberibacter asiaticus strain X",
-		7, false, false);
+		7, false, false, testNames);
 	check(candidatus.get(6) == "Candidatus Liberibacter asiaticus",
 		"Candidatus species names must retain their three-part species name");
-	TaxObj serotype("k__Bacteria;s__Escherichia coli O157:H7", 7, false, false);
-	TaxObj subspecies("k__Bacteria;s__Lactobacillus casei subsp. casei", 7, false, false);
+	TaxObj serotype("k__Bacteria;s__Escherichia coli O157:H7", 7, false, false, testNames);
+	TaxObj subspecies("k__Bacteria;s__Lactobacillus casei subsp. casei", 7, false, false, testNames);
 	check(serotype.get(6) == "Escherichia coli" && subspecies.get(6) == "Lactobacillus casei",
 		"certain species names must be shortened to genus and species");
 	const char* placeholders[] = {"Lachnospiraceae bacterium 3_1_46FAA", "Methanomassiliicoccales archaeon RumEn M1",
 		"human gut metagenome", "Blautia sp", "Bacteroides_sp._XY1", "Lactobacillus cf. casei",
 		"Streptococcus aff. mitis", "unidentified Prevotella", "Ruminococcus spp."};
 	for (const char* name : placeholders) {
-		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false);
+		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false, testNames);
 		check(tax.speciesUncertain && tax.get(6) == name, "placeholder species names must be marked uncertain, unshortened");
 	}
 	const char* species[] = {"Mycobacterium tuberculosis", "Bacteroides_A sp000123456", "Blautia obeum",
 		"Spirochaeta spectabilis"};
 	for (const char* name : species) {
-		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false);
+		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false, testNames);
 		check(!tax.speciesUncertain, "real and GTDB placeholder-accession species must stay certain");
 	}
 }
@@ -364,7 +368,7 @@ void consensus() {
 	check(lineage->depth == 1 && lineage->get(0) == "A" && lineage->get(1) == __unkwnTax,
 		"conflicting children below a missing parent must stop the LCA");
 	delete lineage;
-	parentTest[9]->set(1, "child-a");
+	parentTest[9]->set(1, nameOf("child-a"));
 	lineage = LCAcore(parentTest, singular, 0.9, 2);
 	check(lineage->depth == 2 && lineage->get(1) == "child-a", "matching children below a missing parent must be used");
 	delete lineage;
@@ -376,9 +380,15 @@ void consensus() {
 	lineage = LCAcore(votes, singular, 0.9, 7);
 	check(lineage->get(0) == "A", "exactly the -LCAfrac share of known votes must be accepted");
 	delete lineage;
-	votes[8]->set(0, "B");
+	votes[8]->set(0, nameOf("B"));
 	lineage = LCAcore(votes, singular, 0.9, 7);
 	check(lineage->depth == 0, "less than the -LCAfrac share of known votes must stop the LCA");
+	delete lineage;
+	deleteAll(votes);
+	// In floating point, 25 * 0.56 is slightly more than 14.
+	for (int i = 0; i < 25; ++i) { votes.push_back(lineageOf({i < 14 ? "A" : "B"})); }
+	lineage = LCAcore(votes, singular, 0.56, 7);
+	check(lineage->get(0) == "A", "an exact -LCAfrac share must be accepted despite rounding");
 	delete lineage;
 	deleteAll(votes);
 
@@ -394,7 +404,7 @@ void consensus() {
 	delete lineage;
 	deleteAll(unknown);
 
-	TaxObj uncertain("k__Bacteria;s__Genus sp. X", 7, false, false);
+	TaxObj uncertain("k__Bacteria;s__Genus sp. X", 7, false, false, testNames);
 	std::vector<TaxObj*> alone = {&uncertain};
 	lineage = LCAcore(alone, singular, 0.9, 7);
 	check(lineage->speciesUncertain && lineage->get(6) == "Genus sp. X", "a single hit must keep its species and uncertainty");
@@ -407,12 +417,12 @@ void identityLimits() {
 	const std::pair<double, int> cases[] = {{0.0, 1}, {77.99, 1}, {78.0, 2}, {92.99, 4}, {93.0, 5}, {96.99, 6}, {97.0, 7}, {100.0, 7}};
 	for (const auto& [identity, depth] : cases) {
 		TaxObj tax(7);
-		for (int i = 0; i < 7; ++i) { tax.set(i, "rank" + std::to_string(i)); }
+		for (int i = 0; i < 7; ++i) { tax.set(i, nameOf("rank" + std::to_string(i))); }
 		tax.limitByIdentity(identity, thresholds);
 		check(tax.depth == depth, "each rank must require at least its identity cutoff");
 	}
 	TaxObj shallow(7);
-	shallow.set(0, "B"); shallow.set(1, "P");
+	shallow.set(0, nameOf("B")); shallow.set(1, nameOf("P"));
 	shallow.limitByIdentity(100.0, thresholds);
 	check(shallow.depth == 2, "identity must not deepen a lineage beyond its known ranks");
 }
@@ -420,7 +430,7 @@ void identityLimits() {
 void outputFormatting() {
 	currentGroup = "output formatting";
 	TaxObj output(7);
-	for (int i = 0; i < 7; ++i) { output.set(i, "rank" + std::to_string(i)); }
+	for (int i = 0; i < 7; ++i) { output.set(i, nameOf("rank" + std::to_string(i))); }
 	check(output.getWriteString(std::vector<double>(7, 0.0)) == "rank0\trank1\trank2\trank3\trank4\trank5\trank6",
 		"no Hit2DB or %ID column may be written unless requested");
 	output.setHitDB("subject-read");
@@ -433,8 +443,8 @@ void outputFormatting() {
 	check(output.getWriteString(makeOptions().idThr) == "rank0\trank1\trank2\trank3\trank4\t?\t?\tsubject-read\t94.000000",
 		"ranks above the reported identity must be written as ?");
 	TaxObj partial(7);
-	partial.set(0, "B");
-	partial.set(2, "C");
+	partial.set(0, nameOf("B"));
+	partial.set(2, nameOf("C"));
 	partial.setHitDB(__unkwnTax);
 	check(partial.getWriteString(std::vector<double>(7, 0.0)) == "B\t?\tC\t?\t?\t?\t?\t?",
 		"missing ranks, ranks beyond the depth and an unknown Hit2DB must be written as ?");
@@ -458,10 +468,10 @@ void databaseSelection() {
 		"equal multi-database assignments must select hit reads deterministically");
 
 	TaxObj truncated(7);
-	for (int i = 0; i < 7; ++i) { truncated.set(i, "rank" + std::to_string(i)); }
+	for (int i = 0; i < 7; ++i) { truncated.set(i, nameOf("rank" + std::to_string(i))); }
 	truncated.limitByIdentity(94, makeOptions().idThr);
 	TaxObj moreKnown(7);
-	for (int i = 0; i < 6; ++i) { moreKnown.set(i, "rank" + std::to_string(i)); }
+	for (int i = 0; i < 6; ++i) { moreKnown.set(i, nameOf("rank" + std::to_string(i))); }
 	check(truncated.depth == 5 && truncated.evalAcpyTax(&moreKnown) && truncated.depth == 6,
 		"taxonomy beyond the identity cutoff must not count toward database selection");
 
@@ -545,7 +555,7 @@ void readers() {
 			(shallowFirst ? "dup\t" + shallow + "\ndup\t" + alpha : "dup\t" + alpha + "\ndup\t" + shallow) +
 			"\nother\t" + alpha + "\textra column\n");
 		Silence quiet;
-		RefTax reference(tax.path, 7, false, true);
+		RefTax reference(tax.path, testNames, 7, false, true);
 		const RefTax::Lineage* dup = reference.find("dup");
 		const RefTax::Lineage* other = reference.find("other");
 		check(dup != nullptr && dup->depth == 7, "duplicate identifiers must keep the more complete lineage");
@@ -633,12 +643,13 @@ void taxonomyLoading() {
 		std::string log;
 		{
 			Silence quiet;
-			RefTax tax(file.path, 7, false, true, threads, blockSize);
+			NamePool names; // one per load, so distinctNames counts this load only
+			RefTax tax(file.path, names, 7, false, true, threads, blockSize);
 			lineages.push_back(render(tax, "last"));
 			for (int i = 0; i < 1500; ++i) { lineages.push_back(render(tax, "ref" + std::to_string(i))); }
 			lineages.push_back(std::to_string(tax.size()) + "/" + std::to_string(tax.distinctNames()));
 			if (expected.empty()) {
-				TaxObj parsed("k__Bacteria;p__P1;c__C1;g__Genus1;s__Genus1 species1 strain", 7, false, false);
+				TaxObj parsed("k__Bacteria;p__P1;c__C1;g__Genus1;s__Genus1 species1 strain", 7, false, false, testNames);
 				const RefTax::Lineage* ref1 = tax.find("ref1");
 				bool same = ref1 != nullptr && ref1->depth == parsed.depth;
 				for (int rank = 0; same && rank < 7; ++rank) { same = tax.rankName(*ref1, rank) == parsed.get(rank); }
@@ -666,7 +677,7 @@ void taxonomyLoading() {
 
 	TempFile small("a\tk__Bacteria;p__P;c__C;o__O;f__F;g__G;s__G alpha\nu\tk__Bacteria;g__G;s__G sp. X\n");
 	Silence quiet;
-	RefTax tax(small.path, 7, false, true);
+	RefTax tax(small.path, testNames, 7, false, true);
 	HitLineage limited(tax, *tax.find("a"));
 	limited.limitByIdentity(96.0, makeOptions().idThr);
 	HitLineage masked(tax, *tax.find("a"));
@@ -687,7 +698,7 @@ void endToEnd() {
 	std::unique_ptr<RefTax> reference;
 	{
 		Silence quiet;
-		reference = std::make_unique<RefTax>(tax.path, 7, false, true);
+		reference = std::make_unique<RefTax>(tax.path, testNames, 7, false, true);
 	}
 	options opt = makeOptions({"-showHitRead", "-reportID"});
 	auto run = [&](std::vector<BlastRes> hits) {
@@ -707,6 +718,10 @@ void endToEnd() {
 	check(run({hit("q", "bb", 97.2, 100, 100, 100), hit("q", "cc", 96.6, 100, 100, 100)}) ==
 		"q\tBacteria\tP\tC\tO\tF\tGenus\t?\t?\t96.900000", "the mean identity must limit the reported depth");
 	check(run({hit("q", "bb", 50, 10, 10, 100)}).empty(), "a query without eligible hits must have no result");
+	std::vector<BlastRes> single = {hit("q", "bb", 99, 100, 100, 100)};
+	std::unique_ptr<TaxObj> held(LCA(single, reference.get(), &opt));
+	check(&held->get(6) == nameOf("Genus alpha"),
+		"assignments must point into the name pool, so that they outlive their RefTax with several databases");
 
 	opt = makeOptions({"-showHitRead", "-reportBestHit"});
 	const std::vector<BlastRes> tied = {hit("q", "cc", 99, 100, 100, 100), hit("q", "aa", 99, 100, 100, 100),
@@ -822,6 +837,15 @@ void library() {
 	a = lca::Assign(ten, many, opt, s);
 	check(a.depth == 7 && many.Name(a.name_ids[6]) == "G same" && lca::Assign(ten, many, strict, s).depth == 6,
 		"a rank must need lca_frac of the known votes");
+	lca::Taxonomy split;
+	std::vector<lca::Hit> twentyFive;
+	for (uint32_t i = 0; i < 25; ++i) {
+		split.AddLineage(i < 14 ? "d__A" : "d__B");
+		twentyFive.push_back(libraryHit(i, 99));
+	}
+	lca::Options exactShare = opt;
+	exactShare.lca_frac = 0.56; // 25 * 0.56 is slightly more than 14 in floating point
+	check(lca::Assign(twentyFive, split, exactShare, s).depth == 1, "an exact lca_frac share must be accepted despite rounding");
 
 	check(libraryLineage(assign({libraryHit(0, 99), libraryHit(3, 99)}, opt), t).ends_with(";Mockella alpha"),
 		"a hit without a species must abstain there");
@@ -917,7 +941,7 @@ void libraryMatchesProgram() {
 	std::unique_ptr<RefTax> program;
 	{
 		Silence quiet;
-		program = std::make_unique<RefTax>(file.path, 7, false, true);
+		program = std::make_unique<RefTax>(file.path, testNames, 7, false, true);
 	}
 
 	// Each query hits subjects next to each other in the tree, so that its hits share some ranks.

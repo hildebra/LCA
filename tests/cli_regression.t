@@ -373,6 +373,15 @@ subtest 'malformed taxonomy lines are skipped' => sub {
 	is(rows($f)->[1][-1], 'Genus alpha', 'valid entry used');
 	spew($f->{taxonomy}, "no tab here\n");
 	run_lca($f, expected => 12);
+	# A blank lineage is no record, so the hit to a finds no taxonomy instead of an all-unknown one.
+	spew($f->{taxonomy}, "a\t \nb\t" . sprintf($LINEAGE, 'beta') . "\n");
+	(undef, $err) = run_lca($f, expected => 74);
+	like($err, qr/skipped 1 taxonomy line.*first at line 1/, 'blank lineage skipped');
+	for my $empty ('', "# comments only\n") {
+		spew($f->{taxonomy}, $empty);
+		(undef, $err) = run_lca($f, expected => 12);
+		like($err, qr/No valid taxonomy records/, 'file without records named');
+	}
 };
 
 subtest 'thread option is accepted silently' => sub {

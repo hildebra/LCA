@@ -142,7 +142,7 @@ string TaxObj::getWriteString(const vector<double>& ids) {
 
 
 
-TaxObj::TaxObj(std::string_view X,int d, bool /*nativeSLV*/, bool doNotCheckTax):
+TaxObj::TaxObj(std::string_view X,int d, bool /*nativeSLV*/, bool doNotCheckTax, NamePool& names):
 	SavedTaxs(), Subj(""), hitDB(""), perID(0.f), repID(false), hasHitDB(false),
 	speciesUncertain(false), depth(0) {
 	thread_local LineageViews lineage;
@@ -150,7 +150,7 @@ TaxObj::TaxObj(std::string_view X,int d, bool /*nativeSLV*/, bool doNotCheckTax)
 	SavedTaxs.reserve(d);
 	SavedTaxs.resize(lineage.depth);
 	for (int rank = 0; rank < lineage.depth; ++rank) {
-		SavedTaxs[rank].assign(lineage.ranks[rank].data(), lineage.ranks[rank].size());
+		SavedTaxs[rank] = &names.name(names.intern(lineage.ranks[rank]));
 	}
 	depth = lineage.depth;
 	speciesUncertain = lineage.speciesUncertain;
@@ -182,6 +182,18 @@ void TaxObj::copyOver(const TaxObj* oth) {
 }
 
 
+uint32_t NamePool::intern(std::string_view name) {
+	if (name.empty()) { return 0; }
+	auto found = index.find(name);
+	if (found == index.end()) {
+		store.emplace_back(name);
+		found = index.emplace(std::string_view(store.back()), static_cast<uint32_t>(names.size())).first;
+		names.push_back(&store.back());
+	}
+	return found->second;
+}
+
+
 //*******************************************************
 //        RefTax
 //*******************************************************
@@ -202,12 +214,12 @@ struct RefTax::ParsedBlock {
 	size_t malformed = 0, firstMalformed = 0, extraColumns = 0, firstExtraColumn = 0;
 };
 
-RefTax::RefTax(const string& inF, int tdep, bool /*nativeSLV*/, bool checktaxStr, int threads, size_t blockSize):
-	TaxFile(inF), tlevels(tdep, ""), uniqueSubjects(0), duplicateSubjects(0),
+RefTax::RefTax(const string& inF, NamePool& names, int tdep, bool /*nativeSLV*/, bool checktaxStr, int threads,
+	size_t blockSize):
+	TaxFile(inF), tlevels(tdep, ""), pool(names), uniqueSubjects(0), duplicateSubjects(0),
 	malformedLines(0), firstMalformedLine(0), extraColumnLines(0), firstExtraColumnLine(0)
 {
 	cout << "Loading tax DB.." << inF<<endl;
-	names.push_back(&__unkwnTax);
 	if (blockSize == 0) { blockSize = 1; }
 
 	// Blocks are read in one call each, so the stream's own buffer is bypassed.
@@ -261,15 +273,15 @@ RefTax::RefTax(const string& inF, int tdep, bool /*nativeSLV*/, bool checktaxStr
 			if (!line.empty() && line.back() == '\r') { line.remove_suffix(1); }
 			if (line.empty() || line[0] == '#') { continue; }
 			const size_t tab = line.find('\t');
-			if (tab == std::string_view::npos || tab == 0) {
+			// Only the second column holds the lineage; later columns would otherwise leak into rank names.
+			size_t lineageEnd = tab == std::string_view::npos ? line.size() : line.find('\t', tab + 1);
+			if (lineageEnd == std::string_view::npos) { lineageEnd = line.size(); }
+			if (tab == std::string_view::npos || tab == 0 ||
+				lca::trim_view(line.substr(tab + 1, lineageEnd - tab - 1), " \t\r\n").empty()) {
 				if (out.malformed++ == 0) { out.firstMalformed = number; }
 				continue;
 			}
-			// Only the second column holds the lineage; later columns would otherwise leak into rank names.
-			size_t lineageEnd = line.find('\t', tab + 1);
-			if (lineageEnd == std::string_view::npos) {
-				lineageEnd = line.size();
-			} else if (line.find_first_not_of(" \t", lineageEnd) != std::string_view::npos) {
+			if (line.find_first_not_of(" \t", lineageEnd) != std::string_view::npos) {
 				if (out.extraColumns++ == 0) { out.firstExtraColumn = number; }
 			}
 			parseLineage(line.substr(tab + 1, lineageEnd - tab - 1), tdep, doNotCheckTax, lineage);
@@ -314,11 +326,11 @@ RefTax::RefTax(const string& inF, int tdep, bool /*nativeSLV*/, bool checktaxStr
 	if (nameIds.capacity() > nameIds.size() + nameIds.size() / 4) { nameIds.shrink_to_fit(); }
 	if (subjectChars.capacity() > subjectChars.size() + subjectChars.size() / 4) { subjectChars.shrink_to_fit(); }
 
+	if (uniqueSubjects == 0) {
+		throw FatalError{12, "No valid taxonomy records in " + inF + (malformedLines == 0 ? string() :
+			"; line " + to_string(firstMalformedLine) + " lacks an identifier, a tab, and a lineage") + ".\n"};
+	}
 	if (malformedLines > 0) {
-		if (uniqueSubjects == 0) {
-			throw FatalError{12, "No valid taxonomy records in " + inF + "; line " + to_string(firstMalformedLine) +
-				" lacks an identifier, a tab, and a lineage.\n"};
-		}
 		cerr << "Warning: skipped " << malformedLines << " taxonomy line(s) in " << inF
 			<< " without an identifier, a tab, and a lineage (first at line " << firstMalformedLine << ").\n";
 	}
@@ -332,15 +344,7 @@ RefTax::RefTax(const string& inF, int tdep, bool /*nativeSLV*/, bool checktaxStr
 
 void RefTax::mergeBlock(ParsedBlock& block) {
 	vector<uint32_t> globalIds(block.names.size() + 1, 0);
-	for (size_t i = 0; i < block.names.size(); ++i) {
-		auto found = nameIndex.find(block.names[i]);
-		if (found == nameIndex.end()) {
-			nameStore.emplace_back(block.names[i]);
-			found = nameIndex.emplace(std::string_view(nameStore.back()), static_cast<uint32_t>(names.size())).first;
-			names.push_back(&nameStore.back());
-		}
-		globalIds[i + 1] = found->second;
-	}
+	for (size_t i = 0; i < block.names.size(); ++i) { globalIds[i + 1] = pool.intern(block.names[i]); }
 	for (const auto& record : block.records) {
 		if (nameIds.size() + record.depth > std::numeric_limits<uint32_t>::max() ||
 			lineages.size() + 1 >= std::numeric_limits<uint32_t>::max()) {

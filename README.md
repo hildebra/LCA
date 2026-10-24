@@ -261,7 +261,7 @@ LCA exits with 0 on success, including for `-h` and `-v`. Other values identify 
 
 ## Performance and memory
 
-- The reference taxonomy needs about 100 bytes of memory per reference, about 100 MB for one million references. With multiple databases, one taxonomy is loaded at a time.
+- The reference taxonomy needs about 100 bytes of memory per reference, about 100 MB for one million references. With multiple databases, one taxonomy is loaded at a time, but each query's assignment is kept until all databases are done: about 300 bytes per query, or 300 MB per million reads. The rank names of every taxonomy stay loaded as well.
 - `-t N` loads the taxonomy and computes assignments in parallel, and the output does not depend on the thread count. Reading the mapping file stays on one thread, so 2 to 4 threads give most of the gain. In a benchmark with one million references, an ASV run with 20,000 queries took 1.3 s with `-t 2` and 2.0 s with one thread.
 - Pipelines that call LCA, such as LotuS, need to pass `-t` to use threads.
 - Gzip-compressed mapping files are read almost as fast as plain text. Linking against zlib-ng in zlib-compatible mode can speed up decompression further.
@@ -302,6 +302,7 @@ Results can differ from earlier versions for these reasons, described in the sec
 - 0.32: faster input, about 4x less memory, and `-t` threads; assignments are identical to 0.31.
 - 0.33: `src/LCAlib.h` provides the assignment as a library, and the sources moved to `src/`; the program's output is identical to 0.32.
 - 0.34: `LCAlib.h` saves and rebuilds a Taxonomy (`Taxonomy::Parts`, `Taxonomy::FromParts`, `kNamingRulesVersion`); the program's output is identical to 0.33.
+- 0.35: a rank with exactly the `-LCAfrac` share of votes is assigned at every vote count, also by `lca::Assign` (before, rounding rejected some, such as 14 of 25 votes at 0.56); taxonomy lines with a blank lineage are skipped with a warning, and a taxonomy file without valid lines fails with exit status 12; runs with several databases need about half the memory.
 
 ## Tests
 

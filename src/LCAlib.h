@@ -501,7 +501,8 @@ inline Assignment Assign(std::span<const Hit> hits, const Taxonomy& tax, const O
 					best = &vote;
 				}
 			}
-			if (best->count < static_cast<double>(known) * opt.lca_frac) { break; }
+			// Votes are whole numbers; the margin absorbs rounding of the product, e.g. 25 * 0.56 > 14.
+			if (best->count + 1e-9 < static_cast<double>(known) * opt.lca_frac) { break; }
 			const uint32_t consensus = best->id;
 			result.name_ids[rank] = consensus;
 			result.depth = rank + 1;

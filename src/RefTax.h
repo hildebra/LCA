@@ -12,9 +12,28 @@ bool isGZfile(const string fi);
 inline constexpr size_t __inputBufferSize = size_t(1) << 20;
 
 
+// Rank names, each stored once at an address that never changes; ID 0 is the unknown name. One pool
+// serves every reference database of a run, so assignments keep their names after a RefTax is gone.
+// intern() is not thread-safe; name() is, while no thread interns.
+class NamePool
+{
+public:
+	NamePool() { names.push_back(&__unkwnTax); }
+	NamePool(const NamePool&) = delete;            // the index refers into this object
+	NamePool& operator=(const NamePool&) = delete;
+	uint32_t intern(std::string_view name);
+	const string& name(uint32_t id) const { return *names[id]; }
+	size_t size() const { return names.size(); }
+private:
+	std::deque<string> store;
+	unordered_map<std::string_view, uint32_t> index;
+	vector<const string*> names;                   // by ID
+};
+
+
 struct TaxObj
 {
-	TaxObj(std::string_view, int, bool nativeSLV, bool doNotCheckTax);
+	TaxObj(std::string_view, int, bool nativeSLV, bool doNotCheckTax, NamePool&);
 	TaxObj(const TaxObj* t);
 	TaxObj(int d) : SavedTaxs(), Subj(""), hitDB(""), perID(0.f), repID(false),
 		hasHitDB(false), speciesUncertain(false), depth(0) { SavedTaxs.reserve(d); }
@@ -31,12 +50,13 @@ struct TaxObj
 	//get tax at depth x
 	const string& get(int x) const {
 		if (x < 0 || x >= depth || x >= (int)SavedTaxs.size()) { return __unkwnTax; }
-		return SavedTaxs[x];
+		return *SavedTaxs[x];
 	}
-	void set(int x, string v) {
+	// name must outlive this object: a NamePool's name, or __unkwnTax.
+	void set(int x, const string* name) {
        if (x < 0) { return; }
-		if (x >= (int)SavedTaxs.size()) { SavedTaxs.resize(x + 1, __unkwnTax); }
-		SavedTaxs[x] = std::move(v);
+		if (x >= (int)SavedTaxs.size()) { SavedTaxs.resize(x + 1, &__unkwnTax); }
+		SavedTaxs[x] = name;
 		if (x >= depth) { depth = x + 1; }
 	}
 	//check if other tax is better and copies if so these vals over itself
@@ -47,7 +67,7 @@ struct TaxObj
 	bool reportsHitDB() const { return hasHitDB; }
 
 	//variables
-	vector<string> SavedTaxs;
+	vector<const string*> SavedTaxs; // rank names, owned by a NamePool
 	string Subj;
 	string hitDB;
 	double perID;
@@ -59,8 +79,8 @@ struct TaxObj
 };
 
 
-// Reference taxonomy. Each distinct rank name is stored once; a reference's lineage is a run of
-// name IDs (0 = unknown), and subjects are found through an open-addressing hash table.
+// Reference taxonomy. Rank names are stored once, in a NamePool that must outlive it; a reference's
+// lineage is a run of name IDs (0 = unknown), and subjects are found through an open-addressing hash table.
 class RefTax
 {
 public:
@@ -73,8 +93,8 @@ public:
 	};
 
 	// threads parse the file in parallel; blockSize is the amount of text handed to a thread at once.
-	RefTax(const string&, int tdep, bool, bool, int threads = 1, size_t blockSize = size_t(4) << 20);
-	RefTax(const RefTax&) = delete;            // names and the name index refer into this object
+	RefTax(const string&, NamePool&, int tdep, bool, bool, int threads = 1, size_t blockSize = size_t(4) << 20);
+	RefTax(const RefTax&) = delete;            // lineages and the subject index are large
 	RefTax& operator=(const RefTax&) = delete;
 	void stats();
 	// The reference's lineage, or nullptr for an unknown subject.
@@ -82,13 +102,13 @@ public:
 	uint32_t nameId(const Lineage& lineage, int rank) const {
 		return rank < lineage.depth ? nameIds[lineage.firstName + rank] : 0;
 	}
-	const string& name(uint32_t id) const { return *names[id]; }
+	const string& name(uint32_t id) const { return pool.name(id); }
 	const string& rankName(const Lineage& lineage, int rank) const { return name(nameId(lineage, rank)); }
 	std::string_view subject(const Lineage& lineage) const {
 		return std::string_view(subjectChars).substr(lineage.subjectOffset, lineage.subjectLength);
 	}
 	size_t size() const { return uniqueSubjects; }
-	size_t distinctNames() const { return names.size() - 1; }
+	size_t distinctNames() const { return pool.size() - 1; } // in the pool, so of every taxonomy loaded into it
 	void setTaxLvls(vector<string> x) { tlevels = x; }
 private:
 	struct ParsedBlock;
@@ -98,9 +118,7 @@ private:
 
 	string TaxFile;
 	vector<string> tlevels;
-	std::deque<string> nameStore;                      // stable storage for interned names
-	unordered_map<std::string_view, uint32_t> nameIndex;
-	vector<const string*> names;                       // by ID; names[0] is the unknown name
+	NamePool& pool;
 	vector<uint32_t> nameIds;
 	string subjectChars;
 	vector<Lineage> lineages;                          // every record, duplicates included

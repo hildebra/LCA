@@ -94,8 +94,8 @@ TaxObj* consensusLineage(const vector<Lineage>& TO, bool& hitRd, double LCAfrac,
 	if (count == 0) { return ret; }
 	if (count == 1) {
 		const int depth = lineageDepth(TO.front());
-		ret->SavedTaxs.assign(depth, __unkwnTax);
-		for (int rank = 0; rank < depth; ++rank) { ret->SavedTaxs[rank] = rankName(TO.front(), rank); }
+		ret->SavedTaxs.assign(depth, &__unkwnTax);
+		for (int rank = 0; rank < depth; ++rank) { ret->SavedTaxs[rank] = &rankName(TO.front(), rank); }
 		ret->depth = depth;
 		ret->speciesUncertain = lineageSpeciesUncertain(TO.front());
 		hitRd = true;
@@ -135,9 +135,10 @@ TaxObj* consensusLineage(const vector<Lineage>& TO, bool& hitRd, double LCAfrac,
 				best = &vote;
 			}
 		}
-		if (best->count < static_cast<double>(knownCount) * LCAfrac) { break; }
+		// Votes are whole numbers; the margin absorbs rounding of the product, e.g. 25 * 0.56 > 14.
+		if (best->count + 1e-9 < static_cast<double>(knownCount) * LCAfrac) { break; }
 		const Key consensus = best->key;
-		ret->set(DL, rankName(TO[best->example], DL));
+		ret->set(DL, &rankName(TO[best->example], DL));
 
 		// Hits naming a different taxon at an accepted rank cannot vote at deeper ranks.
 		for (size_t pos = 0; pos < count; ++pos) {
