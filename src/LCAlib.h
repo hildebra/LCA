@@ -19,6 +19,8 @@
 // no_filters skips 1 and 3 (best_hit's choice still applies). LCAimpl.cpp applies the same rules to the program's
 // records, and tests/regression.cpp checks that both give the same assignments. The naming rules for taxonomy names
 // (parseLineage) are the program's own.
+// A Taxonomy can be saved (Parts, since 0.34) and rebuilt without interning every subject's names again (FromParts);
+// saved parts are valid only under the kNamingRulesVersion they were made with.
 #pragma once
 
 #include <algorithm>
@@ -27,6 +29,8 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,6 +42,10 @@ inline constexpr int kDefaultDepth = 7; // domain, phylum, class, order, family,
 inline constexpr int kMaxDepth = 64;    // as -tdep
 inline constexpr int kSpeciesRank = 6;
 inline constexpr double kRelativeCover = 0.85; // rule 3: of the anchor's query coverage
+// Raise it whenever a subject's names could come out differently for the same input: is_unknown_taxon_name's list,
+// species_name_is_placeholder, storeRankName (species shortened to two words, Candidatus to three), Add's trimming,
+// parseLineage's rank prefixes. Saved TaxonomyParts of another version must be rebuilt from the lineage text.
+inline constexpr int kNamingRulesVersion = 1;
 
 //*******************************************************
 //        Taxonomy names
@@ -191,6 +199,14 @@ inline void parseLineage(std::string_view X, int d, bool doNotCheckTax, LineageV
 //        Assignment
 //*******************************************************
 
+// A Taxonomy's contents, to save beside kNamingRulesVersion and rebuild with Taxonomy::FromParts.
+struct TaxonomyParts {
+	int depth = kDefaultDepth;
+	std::vector<std::string> names;         // by id; names[0] is "?" (unknown)
+	std::vector<uint32_t> ids;              // depth per subject, subject-major
+	std::vector<uint8_t> species_uncertain; // per subject, 0 or 1
+};
+
 // Reference lineages by subject index, names interned (id 0: unknown, named "?"), under the program's naming rules.
 class Taxonomy
 {
@@ -198,7 +214,7 @@ public:
 	explicit Taxonomy(int depth = kDefaultDepth) : m_depth(std::clamp(depth, 1, kMaxDepth)) { m_names.emplace_back("?"); }
 	Taxonomy(const Taxonomy&) = delete;            // the name index refers into this object's names
 	Taxonomy& operator=(const Taxonomy&) = delete;
-	Taxonomy(Taxonomy&&) = default;
+	Taxonomy(Taxonomy&&) = default;                // a deque's elements stay in place, and so the index stays valid
 	Taxonomy& operator=(Taxonomy&&) = default;
 
 	// Adds the next subject: names per rank from the domain down, without rank prefixes; ranks after them are unknown.
@@ -227,6 +243,58 @@ public:
 	size_t DistinctNames() const { return m_names.size() - 1; }
 	// The subject's species name is a placeholder such as "Genus sp. X".
 	bool SpeciesUncertain(uint32_t subject) const { return m_species_uncertain[subject] != 0; }
+
+	// A copy of the contents, to save beside kNamingRulesVersion.
+	TaxonomyParts Parts() const {
+		return {m_depth, std::vector<std::string>(m_names.begin(), m_names.end()), m_ids, m_species_uncertain};
+	}
+	// Rebuilds a Taxonomy from Parts made under this kNamingRulesVersion, moving the vectors in. The names are taken as
+	// they are, and only the name index is rebuilt (one insert per name), so that Add reuses their ids. Inconsistent
+	// parts give nullopt and the reason in `error`, and are left unchanged.
+	static std::optional<Taxonomy> FromParts(TaxonomyParts&& parts, std::string& error) {
+		const auto refuse = [&error](std::string reason) {
+			error = std::move(reason);
+			return std::optional<Taxonomy>();
+		};
+		if (parts.depth < 1 || parts.depth > kMaxDepth) {
+			return refuse("depth " + std::to_string(parts.depth) + " is outside 1 to " + std::to_string(kMaxDepth));
+		}
+		if (parts.names.empty()) { return refuse("no names; name 0 must be \"?\""); }
+		if (parts.names[0] != "?") { return refuse("name 0 is \"" + parts.names[0] + "\", not \"?\""); }
+		for (size_t id = 1; id < parts.names.size(); ++id) {
+			if (parts.names[id].empty()) { return refuse("name " + std::to_string(id) + " is empty"); }
+		}
+		const size_t depth = static_cast<size_t>(parts.depth), subjects = parts.species_uncertain.size();
+		if (parts.ids.size() != depth * subjects) {
+			return refuse(std::to_string(parts.ids.size()) + " ids for " + std::to_string(subjects) + " subjects at depth " +
+				std::to_string(depth) + ", not " + std::to_string(depth * subjects));
+		}
+		const size_t names = parts.names.size();
+		const auto past = std::find_if(parts.ids.begin(), parts.ids.end(), [names](uint32_t id) { return id >= names; });
+		if (past != parts.ids.end()) {
+			const size_t i = static_cast<size_t>(past - parts.ids.begin());
+			return refuse("id " + std::to_string(*past) + " at index " + std::to_string(i) + " (subject " +
+				std::to_string(i / depth) + ", rank " + std::to_string(i % depth) + ") is past the " +
+				std::to_string(names) + " names");
+		}
+
+		Taxonomy tax(parts.depth);
+		tax.m_names.assign(std::make_move_iterator(parts.names.begin()), std::make_move_iterator(parts.names.end()));
+		tax.m_name_ids.reserve(names);
+		for (size_t id = 1; id < names; ++id) {
+			const std::string& name = tax.m_names[id];
+			const auto [entry, added] = tax.m_name_ids.emplace(std::string_view(name), static_cast<uint32_t>(id));
+			if (!added || name == tax.m_names[0]) { // a name's votes would be split between its ids
+				std::string reason = "name " + std::to_string(id) + " (\"" + name + "\") repeats name " +
+					std::to_string(added ? 0 : entry->second);
+				std::move(tax.m_names.begin(), tax.m_names.end(), parts.names.begin());
+				return refuse(std::move(reason));
+			}
+		}
+		tax.m_ids = std::move(parts.ids);
+		tax.m_species_uncertain = std::move(parts.species_uncertain);
+		return tax;
+	}
 
 private:
 	uint32_t Store() {

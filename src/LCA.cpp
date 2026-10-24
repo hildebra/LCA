@@ -29,7 +29,9 @@
 //0.33: 23.10.26: LCAlib.h, the assignment of one query as a header-only library (lca::Assign);
 //the sources moved to src/;
 //output is identical to 0.32.
-const char* LCA_ver = "0.33";
+//0.34: 24.10.26: LCAlib.h saves and rebuilds a Taxonomy (Taxonomy::Parts, Taxonomy::FromParts,
+//kNamingRulesVersion); output is identical to 0.33.
+const char* LCA_ver = "0.34";
 
 namespace {
 bool samePath(const string& first, const string& second) {

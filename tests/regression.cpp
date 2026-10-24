@@ -1020,6 +1020,208 @@ void libraryMatchesProgram() {
 	check(placed > 20000 && species > 5000 && consensus > 8000 && gaps > 3000 && uncertain > 1000,
 		"the random queries must reach every rule");
 }
+
+// Subjects 0 to 11 for every naming rule, then a tree of subjects whose neighbours share their upper ranks, with
+// missing ranks, shortened lineages and placeholder species. Depth 8 at most.
+lca::Taxonomy namingRulesTaxonomy(int depth) {
+	lca::Taxonomy t(depth);
+	t.AddLineage("d__Bacteria;p__Firmicutes;c__Clostridia;o__Eubacteriales;f__Lachnospiraceae;g__Blautia;"
+		"s__Blautia obeum ATCC 29174");                                                            // 0: shortened
+	t.AddLineage("k__Bacteria;p__Firmicutes;c__uncultured;o__?;f__;g__Blautia;s__Blautia sp. X"); // 1: unknown, placeholder
+	t.AddLineage("Bacteria;Proteobacteria;Gammaproteobacteria;Enterobacterales;Enterobacteriaceae;Escherichia;"
+		"Escherichia coli O157:H7");                                                               // 2: unprefixed
+	t.AddLineage("d__Bacteria;p__Proteobacteria;s__Candidatus Liberibacter asiaticus strain Y");  // 3: Candidatus
+	t.AddLineage("d__Bacteria;p__Proteobacteria;c__Alphaproteobacteria");                         // 4: shorter than the depth
+	t.AddLineage("d__Bacteria;g__Prevotella;s__uncultured bacterium clone X");                     // 5: placeholder
+	t.AddLineage("D__Archaea;P__Euryarchaeota;s__Methanobrevibacter smithii;t__strain PS");        // 6: a strain
+	t.AddLineage(" d__ Bacteria ; p__ Bacteroidota ; Bacteroidia ;; uncultured bacterium ;");       // 7: padded, mixed
+	t.AddLineage("");                                                                              // 8: no names
+	const std::string_view byRank[] = {"Bacteria", " Bacillota ", "unclassified", "", "Lachnospiraceae", "Unknown",
+		"Roseburia intestinalis L1-82"};
+	t.Add(byRank);                                                                                 // 9
+	const std::string_view shortRanks[] = {"Archaea", "?"};
+	t.Add(shortRanks);                                                                             // 10
+	const std::string_view placeholder[] = {"Bacteria", "Bacillota", "Bacilli", "Lactobacillales", "Lactobacillaceae",
+		"Lactobacillus", "Lactobacillus cf. casei"};
+	t.Add(placeholder);                                                                            // 11
+
+	std::mt19937 random(static_cast<unsigned>(depth));
+	for (int subject = 0; subject < 300; ++subject) {
+		const unsigned leaf = static_cast<unsigned>(subject) * 256 / 300;
+		const int ranks = random() % 5 == 0 ? 1 + static_cast<int>(random() % depth) : depth;
+		std::string lineage;
+		for (int rank = 0; rank < ranks; ++rank) {
+			const unsigned node = leaf >> (7 - rank);
+			std::string name = random() % 20 == 0 ? "" : "N" + std::to_string(rank) + "x" + std::to_string(node);
+			if (rank == lca::kSpeciesRank && !name.empty()) {
+				const std::string genus = "G" + std::to_string(node / 2);
+				name = random() % 3 == 0 ? genus + " sp. " + std::to_string(subject) : genus + " e" + std::to_string(node);
+			}
+			lineage += std::string(rank == 0 ? "" : ";") + "dpcofgst"[rank] + "__" + name;
+		}
+		t.AddLineage(lineage);
+	}
+	return t;
+}
+
+bool sameTaxonomy(const lca::Taxonomy& a, const lca::Taxonomy& b) {
+	if (a.Depth() != b.Depth() || a.Size() != b.Size() || a.DistinctNames() != b.DistinctNames()) { return false; }
+	for (uint32_t id = 0; id <= a.DistinctNames(); ++id) {
+		if (a.Name(id) != b.Name(id)) { return false; }
+	}
+	for (uint32_t subject = 0; subject < a.Size(); ++subject) {
+		if (a.SpeciesUncertain(subject) != b.SpeciesUncertain(subject)) { return false; }
+		for (int rank = 0; rank < a.Depth(); ++rank) {
+			if (a.NameId(subject, rank) != b.NameId(subject, rank)) { return false; }
+		}
+	}
+	return true;
+}
+
+bool sameParts(const lca::TaxonomyParts& a, const lca::TaxonomyParts& b) {
+	return a.depth == b.depth && a.names == b.names && a.ids == b.ids && a.species_uncertain == b.species_uncertain;
+}
+
+// A Taxonomy rebuilt from its parts must be the one they were taken from, for Assign and for Add.
+void taxonomyParts() {
+	currentGroup = "taxonomy parts";
+	std::mt19937 random(20261024);
+	const double identities[] = {100, 99.5, 99.2, 99, 98.4, 97, 96, 94, 92, 88, 80};
+	lca::Scratch scratch;
+	for (int depth : {7, 4, 8}) {
+		lca::Taxonomy original = namingRulesTaxonomy(depth);
+		auto name = [&original](uint32_t subject, int rank) { return original.Name(original.NameId(subject, rank)); };
+		if (depth >= 7) {
+			check(name(0, 6) == "Blautia obeum" && original.NameId(1, 2) == 0 && original.NameId(1, 3) == 0 &&
+				original.NameId(1, 4) == 0 && original.SpeciesUncertain(1) && name(1, 6) == "Blautia sp. X" &&
+				name(2, 6) == "Escherichia coli" && original.NameId(2, 0) == original.NameId(0, 0) &&
+				name(3, 6) == "Candidatus Liberibacter asiaticus" && original.SpeciesUncertain(5) &&
+				name(5, 6) == "uncultured bacterium clone X" && name(7, 2) == "Bacteroidia" && original.NameId(7, 4) == 0 &&
+				name(9, 1) == "Bacillota" && original.NameId(9, 5) == 0 && name(9, 6) == "Roseburia intestinalis" &&
+				original.NameId(10, 1) == 0 && original.SpeciesUncertain(11) && (depth == 7 || name(6, 7) == "strain PS"),
+				"the round trip's subjects must reach every naming rule");
+		}
+
+		const lca::TaxonomyParts parts = original.Parts();
+		bool layout = parts.depth == depth && parts.names.size() == original.DistinctNames() + 1 &&
+			parts.ids.size() == original.Size() * depth && parts.species_uncertain.size() == original.Size();
+		for (uint32_t id = 0; layout && id < parts.names.size(); ++id) { layout = parts.names[id] == original.Name(id); }
+		for (uint32_t subject = 0; layout && subject < original.Size(); ++subject) {
+			layout = parts.species_uncertain[subject] == (original.SpeciesUncertain(subject) ? 1 : 0);
+			for (int rank = 0; layout && rank < depth; ++rank) {
+				layout = parts.ids[subject * depth + rank] == original.NameId(subject, rank);
+			}
+		}
+		check(layout && parts.names[0] == "?", "Parts must hold the names by id and depth ids per subject");
+
+		std::string error;
+		std::optional<lca::Taxonomy> built = lca::Taxonomy::FromParts(lca::TaxonomyParts(parts), error);
+		check(built.has_value(), "the parts of a Taxonomy must be accepted");
+		if (!built) {
+			std::fprintf(stderr, "  depth %d: %s\n", depth, error.c_str());
+			continue;
+		}
+		lca::Taxonomy rebuilt = std::move(*built);
+		check(sameTaxonomy(original, rebuilt), "FromParts(Parts()) must give the same names, ids and placeholder marks");
+
+		lca::Options opt;
+		opt.depth = depth;
+		opt.min_identity = {99, 97, 95, 93, 91, 88, 78, 0};
+		int differences = 0, placed = 0, uncertain = 0;
+		for (int set = 0; set < 300; ++set) {
+			std::vector<lca::Hit> hits;
+			const uint32_t first = static_cast<uint32_t>(random() % (original.Size() - 8));
+			const uint32_t queryLength = random() % 5 == 0 ? 0 : 150;
+			for (int i = 0, count = 1 + static_cast<int>(random() % 8); i < count; ++i) {
+				const uint32_t align = static_cast<uint32_t>(60 + random() % 3 * 45);
+				const uint32_t covered = queryLength == 0 ? 0 : std::min(align, queryLength) - static_cast<uint32_t>(random() % 2 * 10);
+				hits.push_back({first + static_cast<uint32_t>(random() % 8), identities[random() % 11], align, queryLength, covered});
+			}
+			for (bool noFilters : {false, true}) {
+				for (bool bestHit : {false, true}) {
+					opt.no_filters = noFilters;
+					opt.best_hit = bestHit;
+					const lca::Assignment a = lca::Assign(hits, original, opt, scratch);
+					const lca::Assignment b = lca::Assign(hits, rebuilt, opt, scratch);
+					differences += a.depth != b.depth || a.name_ids != b.name_ids || a.species_uncertain != b.species_uncertain ||
+						a.hits_used != b.hits_used || a.mean_identity != b.mean_identity;
+					placed += a.depth >= 3;
+					uncertain += a.species_uncertain;
+				}
+			}
+		}
+		check(differences == 0, "Assign must give the same assignments on the rebuilt Taxonomy");
+		check(placed > 200 && (depth < 7 || uncertain > 20), "the random hit sets must reach deep ranks and placeholder species");
+
+		const uint32_t known = static_cast<uint32_t>(original.DistinctNames());
+		const std::string_view added[] = {"Newdomain", " Firmicutes"};
+		for (lca::Taxonomy* t : {&original, &rebuilt}) {
+			t->AddLineage("d__Bacteria;p__Newphylum;c__Clostridia");
+			t->Add(added);
+		}
+		const uint32_t s = static_cast<uint32_t>(rebuilt.Size()) - 2;
+		check(rebuilt.NameId(s, 0) == rebuilt.NameId(0, 0) && rebuilt.NameId(s, 1) == known + 1 &&
+			rebuilt.NameId(s, 2) == rebuilt.NameId(0, 2) && rebuilt.NameId(s + 1, 0) == known + 2 &&
+			rebuilt.NameId(s + 1, 1) == rebuilt.NameId(0, 1) && rebuilt.DistinctNames() == known + 2,
+			"Add on a rebuilt Taxonomy must reuse the ids of its names and give new names new ids");
+		check(sameTaxonomy(original, rebuilt), "Add must give the same ids on the rebuilt Taxonomy as on the original");
+	}
+
+	const lca::TaxonomyParts valid = namingRulesTaxonomy(7).Parts();
+	auto refusal = [&valid](auto change, std::initializer_list<const char*> words, const char* message) {
+		lca::TaxonomyParts parts = valid;
+		change(parts);
+		const lca::TaxonomyParts given = parts;
+		std::string error;
+		bool refused = !lca::Taxonomy::FromParts(std::move(parts), error);
+		for (const char* word : words) { refused = refused && error.find(word) != std::string::npos; }
+		check(refused && sameParts(parts, given), message); // refused parts are left unchanged
+		if (!refused) { std::fprintf(stderr, "  error: \"%s\"\n", error.c_str()); }
+	};
+	using Parts = lca::TaxonomyParts;
+	refusal([](Parts& p) { p.depth = 0; }, {"depth 0"}, "depth 0 must be refused");
+	refusal([](Parts& p) { p.depth = lca::kMaxDepth + 1; }, {"depth 65"}, "a depth past kMaxDepth must be refused");
+	refusal([](Parts& p) { p.names.clear(); }, {"name 0"}, "parts without names must be refused");
+	refusal([](Parts& p) { p.names[0] = "unknown"; }, {"name 0", "unknown"}, "a name 0 other than ? must be refused");
+	refusal([](Parts& p) { p.names[2].clear(); }, {"name 2 is empty"}, "an empty name must be refused");
+	refusal([](Parts& p) { p.names[3] = p.names[1]; }, {"name 3", "repeats name 1"}, "a repeated name must be refused");
+	refusal([](Parts& p) { p.names.back() = "?"; }, {"repeats name 0"}, "a second ? must be refused");
+	refusal([](Parts& p) { p.ids.pop_back(); }, {"ids for"}, "ids that are not depth per subject must be refused");
+	refusal([](Parts& p) { p.species_uncertain.push_back(0); }, {"ids for"}, "a subject without ids must be refused");
+	refusal([](Parts& p) { p.ids[9] = static_cast<uint32_t>(p.names.size()); }, {"index 9"},
+		"an id past the names must be refused");
+
+	// About ribotal's reference (1.77 M subjects, 274 K names): FromParts must take a small part of the time of Add.
+	const uint32_t pool[] = {3, 60, 600, 2500, 12000, 45000, 140000};
+	std::vector<std::vector<std::string>> names(7);
+	for (int rank = 0; rank < 7; ++rank) {
+		for (uint32_t i = 0; i < pool[rank]; ++i) {
+			names[rank].push_back(rank == lca::kSpeciesRank ? "Genus" + std::to_string(i % 45000) + " species" + std::to_string(i) :
+				"Rank" + std::to_string(rank) + "name" + std::to_string(i));
+		}
+	}
+	lca::Taxonomy large;
+	std::array<std::string_view, 7> lineage;
+	const auto addStart = std::chrono::steady_clock::now();
+	for (uint32_t subject = 0; subject < 1000000; ++subject) {
+		for (int rank = 0; rank < 7; ++rank) {
+			uint32_t mixed = subject * 2654435761u + static_cast<uint32_t>(rank) * 0x9E3779B9u;
+			mixed ^= mixed >> 15;
+			lineage[rank] = names[rank][mixed % pool[rank]];
+		}
+		large.Add(lineage);
+	}
+	const double addSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - addStart).count();
+	lca::TaxonomyParts largeParts = large.Parts();
+	std::string error;
+	const auto rebuildStart = std::chrono::steady_clock::now();
+	std::optional<lca::Taxonomy> rebuilt = lca::Taxonomy::FromParts(std::move(largeParts), error);
+	const double rebuildSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - rebuildStart).count();
+	std::printf("  %zu subjects, %zu names: Add %.3f s, FromParts %.3f s\n", large.Size(), large.DistinctNames(),
+		addSeconds, rebuildSeconds);
+	check(rebuilt && sameTaxonomy(large, *rebuilt), "a large Taxonomy must be rebuilt unchanged");
+	check(rebuildSeconds * 5 < addSeconds, "FromParts must take a small part of the time that Add takes");
+}
 }
 
 int main() {
@@ -1042,6 +1244,7 @@ int main() {
 	emptyConversion();
 	library();
 	libraryMatchesProgram();
+	taxonomyParts();
 
 	if (failures != 0) {
 		std::cerr << failures << " regression check(s) failed\n";

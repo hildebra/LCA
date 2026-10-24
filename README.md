@@ -288,6 +288,7 @@ lca::Assignment a = lca::Assign(hits, tax, opt, scratch);
 - `Hit` holds `subject` (the index into the taxonomy), `identity` in percent, `align_len`, `query_len` and `query_covered`. A `query_len` of 0 means the query length is unknown, as in 12-column BLAST input; the coverage filter is then skipped. Several hits may share a subject. Hits of subjects outside the taxonomy are ignored.
 - `Options` mirrors the command-line options: `min_identity` (`-id`, deepest rank first), `lca_frac` (`-LCAfrac`), `min_align_len` (`-minAlignLen`), `min_cover` (`-cover`), `best_hit` (`-reportBestHit`), `no_filters` (`-no_bl_filter`) and `depth` (`-tdep`). Unlike `-reportBestHit`, `best_hit` keeps the supplied cutoffs; set every `min_identity` to 1 to match the program.
 - `Assignment` reports `depth`, the number of ranks assigned from Domain down, ending at the deepest named rank. It also reports `name_ids` per rank, where `0` marks a rank that no retained hit names, and `mean_identity` (as `%ID`). `hits_used` is the number of retained subjects; 0 means no hit passed the filters, where the program writes no row. `species_uncertain` is set when the assigned species is a placeholder name.
+- `Parts()` copies out a `Taxonomy`'s names and name IDs so they can be saved, and `Taxonomy::FromParts` rebuilds the `Taxonomy` from them without looking up every subject's names again. Saved parts are valid only under the `kNamingRulesVersion` they were made with; under another version, build the `Taxonomy` from the lineages again.
 - A `Taxonomy` is read-only once built, so any number of threads can call `Assign` with it at the same time, each with its own `Scratch`. `Assign` allocates no memory once its `Scratch` has grown to the largest query.
 
 `make check` compares the library with the program on random queries in every filtering mode, so a change to the rules in `src/LCAimpl.cpp` must be made in `src/LCAlib.h` as well.
@@ -300,6 +301,7 @@ Results can differ from earlier versions for these reasons, described in the sec
 - 0.31: the highest-identity hit anchors the filters, and the relative filter uses query coverage instead of alignment length; names below a missing rank are used; tied best hits in `-reportBestHit` mode are combined by consensus; more placeholder species names are recognized; malformed input lines are skipped with warnings instead of stopping the run.
 - 0.32: faster input, about 4x less memory, and `-t` threads; assignments are identical to 0.31.
 - 0.33: `src/LCAlib.h` provides the assignment as a library, and the sources moved to `src/`; the program's output is identical to 0.32.
+- 0.34: `LCAlib.h` saves and rebuilds a Taxonomy (`Taxonomy::Parts`, `Taxonomy::FromParts`, `kNamingRulesVersion`); the program's output is identical to 0.33.
 
 ## Tests
 
