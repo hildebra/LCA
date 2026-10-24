@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <numeric>
@@ -689,6 +690,118 @@ void taxonomyLoading() {
 		"hit lineages must report the reference's species uncertainty");
 }
 
+// A taxonomy read from its index must be the one read from its text, and the index must be rebuilt when the file
+// or the settings that shape the taxonomy change.
+void taxonomyIndex() {
+	currentGroup = "taxonomy index";
+	std::string text = "# reference taxonomy\n";
+	for (int i = 0; i < 400; ++i) {
+		const std::string genus = "Genus" + std::to_string(i % 23);
+		text += "ref" + std::to_string(i % 350) + "\tk__Bacteria;p__P" + std::to_string(i % 4) + ";g__" +
+			(i % 11 == 0 ? "uncultured" : genus) + ";s__" + genus + (i % 9 == 0 ? " sp. X" : " species" + std::to_string(i % 7)) +
+			(i % 50 == 0 ? "\textra" : "") + "\n";
+		if (i % 97 == 0) { text += "malformed line\n"; }
+	}
+	TempFile file(text);
+	const std::string index = RefTax::indexPath(file.path);
+	struct Remove {
+		std::string path;
+		~Remove() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+	} removeIndex{index};
+
+	auto render = [](const RefTax& tax) {
+		std::string rendered = std::to_string(tax.size()) + "/" + std::to_string(tax.distinctNames());
+		for (int i = 0; i <= 350; ++i) {
+			const std::string id = i < 350 ? "ref" + std::to_string(i) : "new";
+			const RefTax::Lineage* lineage = tax.find(id);
+			rendered += "\n" + id + (lineage == nullptr ? " missing" :
+				" " + std::to_string(lineage->depth) + (lineage->speciesUncertain ? "u" : "c"));
+			for (int rank = 0; lineage != nullptr && rank < lineage->depth; ++rank) { rendered += ";" + tax.rankName(*lineage, rank); }
+		}
+		return rendered;
+	};
+	// A pool of its own for each load, holding `before` first, as a pool shared with an earlier database would.
+	auto load = [&file, &render](int depth, bool checkUnknown, bool useIndex, std::string& log,
+		std::initializer_list<const char*> before = {}) {
+		NamePool pool;
+		for (const char* name : before) { pool.intern(name); }
+		Silence quiet;
+		const RefTax tax(file.path, pool, depth, false, checkUnknown, 2, 1000, useIndex);
+		log = quiet.sink.str();
+		return render(tax);
+	};
+	auto withoutIndex = [](const std::string& log) {
+		std::istringstream lines(log);
+		std::string kept, line;
+		while (std::getline(lines, line)) {
+			if (line.find("axonomy index") == std::string::npos) { kept += line + "\n"; }
+		}
+		return kept;
+	};
+	auto loadsLike = [&](int depth, bool checkUnknown, const char* expectedLine, const char* message,
+		std::initializer_list<const char*> before = {}) {
+		std::string plainLog, log;
+		const std::string plain = load(depth, checkUnknown, false, plainLog, before);
+		const std::string indexed = load(depth, checkUnknown, true, log, before);
+		check(indexed == plain && withoutIndex(log) == plainLog && log.find(expectedLine) != std::string::npos, message);
+		if (log.find(expectedLine) == std::string::npos) { std::fprintf(stderr, "  log:\n%s", log.c_str()); }
+	};
+	auto indexBytes = [&index] {
+		std::ifstream in(index, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(in), {});
+	};
+
+	std::string log;
+	load(7, true, false, log);
+	check(!std::filesystem::exists(index), "no index may be written without useIndex");
+	loadsLike(7, true, "Wrote taxonomy index", "the first load must write the index and give the text's taxonomy and reports");
+	check(std::filesystem::is_regular_file(index), "the index must be written beside the taxonomy");
+	loadsLike(7, true, "Read taxonomy index", "the next load must read the index and give the same taxonomy and reports");
+	// Names that a pool holds already have other IDs there than in a pool of their own.
+	const std::initializer_list<const char*> other = {"Genus5 species3", "Other", "P2", "Bacteria"};
+	loadsLike(7, true, "Read taxonomy index", "an index must be read into a pool that holds other names", other);
+	const std::string fresh = indexBytes();
+	std::filesystem::remove(index);
+	loadsLike(7, true, "Wrote taxonomy index", "an index must be written from a pool that holds other names", other);
+	check(indexBytes() == fresh, "the index must not depend on the other names in the pool");
+	loadsLike(8, true, "does not match", "another depth must rebuild the index");
+	loadsLike(8, false, "does not match", "-no_taxDB_filter must rebuild the index");
+	loadsLike(8, false, "Read taxonomy index", "the rebuilt index must be read");
+
+	std::filesystem::last_write_time(file.path, std::filesystem::last_write_time(file.path) + std::chrono::seconds(2));
+	loadsLike(8, false, "does not match", "a newer taxonomy file must rebuild the index");
+	std::ofstream(file.path, std::ios::binary | std::ios::app) << "new\tk__Bacteria;p__New\n";
+	loadsLike(8, false, "does not match", "a changed taxonomy file must rebuild the index");
+	check(load(8, false, true, log).find("\nnew 2c;Bacteria;New") != std::string::npos,
+		"the rebuilt index must hold the changed taxonomy");
+
+	// A damaged index is rebuilt, never read.
+	const std::string good = indexBytes();
+	auto damaged = [&](std::string content, const char* message) {
+		std::ofstream(index, std::ios::binary | std::ios::trunc) << content;
+		loadsLike(8, false, "does not match", message);
+	};
+	damaged(good.substr(0, good.size() - 1), "a truncated index must be rebuilt");
+	damaged(good + "x", "an index with trailing bytes must be rebuilt");
+	std::string changed = good;
+	changed[48] = static_cast<char>(changed[48] + 1); // the count of names
+	damaged(changed, "an index whose counts do not add up must be rebuilt");
+	changed = good;
+	changed[changed.size() - 13] = '\xff'; // the last slot's lineage, before the 8-byte end mark
+	damaged(changed, "an index with a slot past the lineages must be rebuilt");
+	damaged("", "an empty index must be rebuilt");
+
+	// An index that cannot be written leaves the taxonomy as read from text, and no temporary file behind.
+	std::filesystem::remove(index);
+	std::filesystem::create_directory(index);
+	loadsLike(8, false, "could not write the taxonomy index", "an index that cannot be written must be reported");
+	bool leftovers = false;
+	for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(index).parent_path())) {
+		leftovers = leftovers || entry.path().string().rfind(index + ".tmp", 0) == 0;
+	}
+	check(!leftovers, "a failed index write must remove its temporary file");
+}
+
 void endToEnd() {
 	currentGroup = "LCA driver";
 	TempFile tax("aa\tk__Bacteria;p__P;c__C;o__O;f__F;g__Genus;s__Genus beta\n"
@@ -1263,6 +1376,7 @@ int main() {
 	readers();
 	orderedPipeline();
 	taxonomyLoading();
+	taxonomyIndex();
 	endToEnd();
 	matrixCounts();
 	emptyConversion();

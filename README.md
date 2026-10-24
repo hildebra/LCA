@@ -168,6 +168,10 @@ Use `-tdep 8` to include Strain (`t__`). Additional ranks default to a 97% ident
 
 Species names undergo normalization: ordinary names are shortened to genus and species, with an extra word retained for `Candidatus` names. Placeholder names are treated as uncertain and are not shortened: names starting with `uncultured` or `unclassified`, or containing any of the words `sp`, `sp.`, `spp`, `spp.`, `cf`, `cf.`, `aff`, `aff.`, `bacterium`, `archaeon`, `metagenome`, `unidentified`, `unknown`, `environmental`, `uncultured`, `unclassified`, or `incertae`, regardless of case. Words are separated by spaces or underscores, so `Lachnospiraceae bacterium 3_1_46FAA` and `Bacteroides_sp._XY1` are placeholders, while GTDB names such as `Bacteroides_A sp000123456` are not. Uncertain species votes are suppressed when a retained hit supplies a known, certain species.
 
+#### Taxonomy index
+
+Reading a large taxonomy file takes seconds, so LCA saves the loaded taxonomy beside it as an index, named after the file with `.idx` appended (for example `reference.tax.idx`), and later runs read the index instead of the text. An index is used only while the taxonomy file keeps the size and modification time it was made from, and while `-tdep`, `-no_taxDB_filter` and LCA's naming rules stay the same. Otherwise LCA reads the text again and replaces the index; it also replaces an index written by another LCA build or on another kind of machine, or one that is damaged. If the index cannot be written, for example in a read-only directory, LCA prints a notice and continues. `-no_tax_idx` turns the index off. Assignments are the same with or without an index.
+
 ## Usage and options
 
 ```sh
@@ -214,6 +218,7 @@ For example, to require 99% identity at species rank while retaining the other d
 | `-matHigh` | Write one lineage-count file per configured taxonomy rank. |
 | `-readInput` | Label the first assignment column `Reads` instead of the default `OTU`; classification and counting are unchanged. |
 | `-t N` | Threads for loading the reference taxonomy and computing assignments; default 1. Output is identical for any value. Reading the mapping file stays on one thread, so gains level off at about 2-4 threads. Values that are not a positive integer mean one thread. |
+| `-no_tax_idx` | Neither read nor write the [taxonomy index](#taxonomy-index). |
 | `-SLVfmt` | Compatibility flag; recognized taxonomy prefixes are automatically detected without it. |
 | `-f bl8` | Compatibility option; `bl8` is the only accepted value and covers both supported mapping layouts. |
 
@@ -245,7 +250,7 @@ To generate these additional reports for the quick example:
   -reportHitPattern example/hit-pattern.tsv
 ```
 
-Output paths must be distinct from all inputs and from one another, including generated count files and existing symbolic or hard-link aliases. Existing output files are overwritten. Input read errors, corrupt gzip streams, and output write failures return a nonzero exit status; a failed run may leave partial output files. Skipped malformed input lines are reported on standard error and do not change the exit status.
+Output paths must be distinct from all inputs, taxonomy indexes included, and from one another, including generated count files and existing symbolic or hard-link aliases. Existing output files are overwritten. Input read errors, corrupt gzip streams, and output write failures return a nonzero exit status; a failed run may leave partial output files. Skipped malformed input lines are reported on standard error and do not change the exit status.
 
 ## Exit status
 
@@ -263,6 +268,7 @@ LCA exits with 0 on success, including for `-h` and `-v`. Other values identify 
 
 - The reference taxonomy needs about 100 bytes of memory per reference, about 100 MB for one million references. With multiple databases, one taxonomy is loaded at a time, but each query's assignment is kept until all databases are done: about 300 bytes per query, or 300 MB per million reads. The rank names of every taxonomy stay loaded as well.
 - `-t N` loads the taxonomy and computes assignments in parallel, and the output does not depend on the thread count. Reading the mapping file stays on one thread, so 2 to 4 threads give most of the gain. In a benchmark with one million references, an ASV run with 20,000 queries took 1.3 s with `-t 2` and 2.0 s with one thread.
+- The [taxonomy index](#taxonomy-index) loads an unchanged taxonomy faster. In a test with 1.77 million references (a 270 MB file), loading took 0.45 s from the index instead of 2.9 s from the text with one thread, or 1.6 s with `-t 4`. The first run, which wrote the 130 MB index, took about 1.2 s longer.
 - Pipelines that call LCA, such as LotuS, need to pass `-t` to use threads.
 - Gzip-compressed mapping files are read almost as fast as plain text. Linking against zlib-ng in zlib-compatible mode can speed up decompression further.
 
@@ -303,6 +309,7 @@ Results can differ from earlier versions for these reasons, described in the sec
 - 0.33: `src/LCAlib.h` provides the assignment as a library, and the sources moved to `src/`; the program's output is identical to 0.32.
 - 0.34: `LCAlib.h` saves and rebuilds a Taxonomy (`Taxonomy::Parts`, `Taxonomy::FromParts`, `kNamingRulesVersion`); the program's output is identical to 0.33.
 - 0.35: a rank with exactly the `-LCAfrac` share of votes is assigned at every vote count, also by `lca::Assign` (before, rounding rejected some, such as 14 of 25 votes at 0.56); taxonomy lines with a blank lineage are skipped with a warning, and a taxonomy file without valid lines fails with exit status 12; runs with several databases need about half the memory.
+- 0.36: LCA writes a [taxonomy index](#taxonomy-index) beside each taxonomy file and reads it in later runs (`-no_tax_idx` turns it off); the program's output is identical to 0.35.
 
 ## Tests
 

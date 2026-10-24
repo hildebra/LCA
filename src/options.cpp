@@ -52,6 +52,7 @@ void self_help() {
 	cout << "  -LCAfrac           (0-1] fraction of matching known taxonomies required at each level. Default=\"0.9\"\n";
 	cout << "  -t                 [int] threads for loading the taxonomy and computing assignments; output is identical for any value. Default=1\n";
 	cout << "  -tdep              [int] number of taxonomy levels to read and report. Default=7\n";
+	cout << "  -no_tax_idx        neither read nor write the taxonomy index (-r file + .idx), which loads an unchanged taxonomy faster. Default: on\n";
 	cout << "  -id                comma-separated min %identity values (inclusive) from the deepest configured rank back to Domain; supply exactly -tdep values. Default=\"97,95,93,91,88,78,0\"\n";
 	cout << "  -cover             [0-1] query coverage required when qlen is present; skipped for legacy 12-column input. Default=0.5\n";
 	cout << "  -minAlignLen       [int] min num basepairs of hit to accept reported hit. Default=\"75\"\n";
@@ -67,7 +68,7 @@ void self_help() {
 options::options(int argc, char **argv,int defDep):
 	RefTaxFile(""), blastres(""), outF(""), input_format("bl8"), repHitPattern(""),
 	BLfilter(true), calcHighMats(false), hitRD(false), isReads(false),
-	nativeSlVdb(false), reportID(false), reportBestHit(false), checkTaxoUnkw(true),
+	nativeSlVdb(false), reportID(false), reportBestHit(false), checkTaxoUnkw(true), taxIndex(true),
 	numThr(1), taxDepth(defDep), LCAfract(0.9), minCover(0.5f), minAliLen(75), idThr(),
 	blFiles(0), refDBs(0), Taxlvls(), version(false)
 {
@@ -106,6 +107,8 @@ options::options(int argc, char **argv,int defDep):
 			BLfilter = false;
 		else if (!strcmp(argv[i], "-no_taxDB_filter"))
 			checkTaxoUnkw = false;
+		else if (!strcmp(argv[i], "-no_tax_idx"))
+			taxIndex = false;
 		else if (!strcmp(argv[i], "-readInput"))
 			isReads = true;
 		else if (!strcmp(argv[i], "-minAlignLen"))

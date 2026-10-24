@@ -25,6 +25,7 @@ public:
 	bool reportID; // add column with %id match
 	bool reportBestHit; //reports best hit, if higher than required %id
 	bool checkTaxoUnkw; //check in the tax DB, if unkownn, ? etc levels are there and replaces with ?
+	bool taxIndex; //read and write each taxonomy's index (.idx) beside it; -no_tax_idx turns it off
 	int numThr; //threads for taxonomy loading and assignment (-t); 1 by default
 	int taxDepth; //how deep does the taxonomy go?
 	double LCAfract;

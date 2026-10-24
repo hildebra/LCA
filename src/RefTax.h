@@ -92,10 +92,15 @@ public:
 		bool speciesUncertain;
 	};
 
-	// threads parse the file in parallel; blockSize is the amount of text handed to a thread at once.
-	RefTax(const string&, NamePool&, int tdep, bool, bool, int threads = 1, size_t blockSize = size_t(4) << 20);
+	static constexpr size_t defaultBlockSize = size_t(4) << 20;
+	// threads parse the file in parallel; blockSize is the amount of text handed to a thread at once. With useIndex,
+	// the taxonomy is read from its index (indexPath) if that was made from the same file with the same settings, and
+	// the index is written otherwise.
+	RefTax(const string&, NamePool&, int tdep, bool, bool, int threads = 1, size_t blockSize = defaultBlockSize,
+		bool useIndex = false);
 	RefTax(const RefTax&) = delete;            // lineages and the subject index are large
 	RefTax& operator=(const RefTax&) = delete;
+	static string indexPath(const string& taxonomyFile) { return taxonomyFile + ".idx"; }
 	void stats();
 	// The reference's lineage, or nullptr for an unknown subject.
 	const Lineage* find(std::string_view subject) const;
@@ -112,6 +117,11 @@ public:
 	void setTaxLvls(vector<string> x) { tlevels = x; }
 private:
 	struct ParsedBlock;
+	struct IndexHeader;
+	void readText(const string& inF, int tdep, bool checktaxStr, int threads, size_t blockSize);
+	static bool indexKey(const string& inF, int tdep, bool checktaxStr, IndexHeader& key);
+	bool readIndex(const string& path, const IndexHeader& key);
+	void writeIndex(const string& path, const IndexHeader& key) const;
 	void mergeBlock(ParsedBlock& block);
 	void buildIndex();
 	bool betterLineage(const Lineage& a, const Lineage& b) const;

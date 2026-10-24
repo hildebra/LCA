@@ -35,7 +35,10 @@
 //rejected e.g. 14 of 25 at 0.56), also by lca::Assign; taxonomy lines with a blank lineage are skipped, and a
 //taxonomy without valid lines fails with exit 12; assignments point to rank names in a NamePool shared by all
 //databases, which halves the memory of multi-database runs.
-const char* LCA_ver = "0.35";
+//0.36: 24.10.26: a taxonomy index (-r file + .idx) is written beside each taxonomy and read instead of the text
+//while the taxonomy file and the settings that shape it are unchanged; -no_tax_idx turns it off;
+//output is identical to 0.35.
+const char* LCA_ver = "0.36";
 
 namespace {
 bool samePath(const string& first, const string& second) {
@@ -50,6 +53,9 @@ bool samePath(const string& first, const string& second) {
 bool validateOutputPaths(const options& opt, const Matrix& matrix) {
 	vector<string> inputs = opt.blFiles;
 	inputs.insert(inputs.end(), opt.refDBs.begin(), opt.refDBs.end());
+	if (opt.taxIndex) {
+		for (const auto& path : opt.refDBs) { inputs.push_back(RefTax::indexPath(path)); }
+	}
 	vector<string> outputs = {opt.outF};
 	if (!opt.repHitPattern.empty()) { outputs.push_back(opt.repHitPattern); }
 	if (opt.calcHighMats) {
@@ -136,7 +142,8 @@ int runLCA(options& OPT) {
 	size_t taxWritten = 0;
 	const bool multiDBuse = refDbCount > 1;
 	for (size_t xi = 0; xi < refDbCount; xi++) {
-		RefTax RT(OPT.refDBs[xi], names, OPT.taxDepth, OPT.nativeSlVdb, OPT.checkTaxoUnkw, OPT.numThr);
+		RefTax RT(OPT.refDBs[xi], names, OPT.taxDepth, OPT.nativeSlVdb, OPT.checkTaxoUnkw, OPT.numThr,
+			RefTax::defaultBlockSize, OPT.taxIndex);
 		RT.setTaxLvls(OPT.Taxlvls);
 		BlastReader BR(OPT.blFiles[xi], OPT.input_format);
 

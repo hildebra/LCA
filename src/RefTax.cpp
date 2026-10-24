@@ -4,7 +4,9 @@
 #include <cerrno>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <climits>
+#include <cstddef>
 #include <filesystem>
 #include <limits>
 
@@ -214,12 +216,72 @@ struct RefTax::ParsedBlock {
 	size_t malformed = 0, firstMalformed = 0, extraColumns = 0, firstExtraColumn = 0;
 };
 
+// The taxonomy index (since 0.36) is this header, then the arrays it counts in this order: name lengths (uint32) and
+// name characters, numbered from 1 by first use in the taxonomy rather than as in the pool; name IDs (uint32) in that
+// numbering; subject characters; per lineage, the subject's length (uint32), then the depths (uint16), then the
+// uncertain-species flags (uint8); the hash table (uint64); and kIndexEnd. Offsets into the name IDs and subject
+// characters follow from the lengths and depths. Numbers are in the machine's byte order; the fields up to `names`
+// are the key, and another machine or LCA build gives another key.
+struct RefTax::IndexHeader {
+	char magic[8];
+	uint32_t format, namingRules, depth, checkUnknownNames;
+	uint64_t sourceSize;
+	int64_t sourceTime;  // modification time, in the file clock's ticks
+	uint64_t hashCheck;  // std::hash of a fixed text, as the hash table depends on it
+	uint64_t names, nameChars, nameIds, subjectChars, lineages, slots;
+	uint64_t uniqueSubjects, duplicateSubjects, malformedLines, firstMalformedLine, extraColumnLines, firstExtraColumnLine;
+};
+
+namespace {
+constexpr char kIndexMagic[8] = {'L', 'C', 'A', 'i', 'n', 'd', 'e', 'x'};
+constexpr char kIndexEnd[8] = {'L', 'C', 'A', '-', 'e', 'n', 'd', '\n'};
+constexpr uint32_t kIndexFormat = 1;
+
+template <class T> bool readArray(istream& in, vector<T>& values, uint64_t count) {
+	values.resize(count);
+	return count == 0 || in.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(count * sizeof(T)));
+}
+
+bool readChars(istream& in, string& text, uint64_t count) {
+	text.resize(count);
+	return count == 0 || in.read(text.data(), static_cast<std::streamsize>(count));
+}
+
+template <class T> void writeArray(ostream& out, const vector<T>& values) {
+	out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(T)));
+}
+}
+
 RefTax::RefTax(const string& inF, NamePool& names, int tdep, bool /*nativeSLV*/, bool checktaxStr, int threads,
-	size_t blockSize):
+	size_t blockSize, bool useIndex):
 	TaxFile(inF), tlevels(tdep, ""), pool(names), uniqueSubjects(0), duplicateSubjects(0),
 	malformedLines(0), firstMalformedLine(0), extraColumnLines(0), firstExtraColumnLine(0)
 {
 	cout << "Loading tax DB.." << inF<<endl;
+	IndexHeader key{};
+	const bool indexed = useIndex && indexKey(inF, tdep, checktaxStr, key);
+	if (!indexed || !readIndex(indexPath(inF), key)) {
+		readText(inF, tdep, checktaxStr, threads, blockSize);
+		if (uniqueSubjects == 0) {
+			throw FatalError{12, "No valid taxonomy records in " + inF + (malformedLines == 0 ? string() :
+				"; line " + to_string(firstMalformedLine) + " lacks an identifier, a tab, and a lineage") + ".\n"};
+		}
+		if (indexed) { writeIndex(indexPath(inF), key); }
+	}
+
+	if (malformedLines > 0) {
+		cerr << "Warning: skipped " << malformedLines << " taxonomy line(s) in " << inF
+			<< " without an identifier, a tab, and a lineage (first at line " << firstMalformedLine << ").\n";
+	}
+	if (extraColumnLines > 0) {
+		cerr << "Warning: ignored columns after the lineage on " << extraColumnLines << " taxonomy line(s) in "
+			<< inF << " (first at line " << firstExtraColumnLine << ").\n";
+	}
+	cout << duplicateSubjects << " of " << duplicateSubjects + uniqueSubjects << " are duplicate entries\n";
+	this->stats();
+}
+
+void RefTax::readText(const string& inF, int tdep, bool checktaxStr, int threads, size_t blockSize) {
 	if (blockSize == 0) { blockSize = 1; }
 
 	// Blocks are read in one call each, so the stream's own buffer is bypassed.
@@ -325,21 +387,192 @@ RefTax::RefTax(const string& inF, NamePool& names, int tdep, bool /*nativeSLV*/,
 	if (lineages.capacity() > lineages.size() + lineages.size() / 4) { lineages.shrink_to_fit(); }
 	if (nameIds.capacity() > nameIds.size() + nameIds.size() / 4) { nameIds.shrink_to_fit(); }
 	if (subjectChars.capacity() > subjectChars.size() + subjectChars.size() / 4) { subjectChars.shrink_to_fit(); }
+}
 
-	if (uniqueSubjects == 0) {
-		throw FatalError{12, "No valid taxonomy records in " + inF + (malformedLines == 0 ? string() :
-			"; line " + to_string(firstMalformedLine) + " lacks an identifier, a tab, and a lineage") + ".\n"};
+//*******************************************************
+//        Taxonomy index
+//*******************************************************
+
+bool RefTax::indexKey(const string& inF, int tdep, bool checktaxStr, IndexHeader& key) {
+	static_assert(sizeof(IndexHeader) == 144 && offsetof(IndexHeader, names) == 48,
+		"the index header has no padding, so that it is written and compared byte by byte");
+	std::error_code error;
+	if (!std::filesystem::is_regular_file(inF, error)) { return false; }
+	const uintmax_t size = std::filesystem::file_size(inF, error);
+	if (error) { return false; }
+	const auto time = std::filesystem::last_write_time(inF, error);
+	if (error) { return false; }
+	key = IndexHeader{};
+	std::memcpy(key.magic, kIndexMagic, sizeof key.magic);
+	key.format = kIndexFormat;
+	key.namingRules = lca::kNamingRulesVersion;
+	key.depth = static_cast<uint32_t>(tdep);
+	key.checkUnknownNames = checktaxStr ? 1 : 0;
+	key.sourceSize = size;
+	key.sourceTime = static_cast<int64_t>(time.time_since_epoch().count());
+	key.hashCheck = std::hash<std::string_view>{}("LCA taxonomy index");
+	return true;
+}
+
+// False, and nothing read, if there is no index, if it was made from another file or with other settings, or if it
+// is not consistent.
+bool RefTax::readIndex(const string& path, const IndexHeader& key) {
+	std::error_code error;
+	const uintmax_t size = std::filesystem::file_size(path, error);
+	if (error) { return false; }
+	auto mismatch = [&]() {
+		cout << "Taxonomy index " << path << " does not match " << TaxFile << "; rebuilding it\n";
+		return false;
+	};
+	ifstream in(path.c_str(), ios::in | ios::binary);
+	IndexHeader header{};
+	if (!in.read(reinterpret_cast<char*>(&header), sizeof header) ||
+		std::memcmp(&header, &key, offsetof(IndexHeader, names)) != 0) { return mismatch(); }
+	// Each count is at most the file size, so the size they add up to cannot overflow.
+	for (const uint64_t count : {header.names, header.nameChars, header.nameIds, header.subjectChars, header.lineages,
+		header.slots}) {
+		if (count > size) { return mismatch(); }
 	}
-	if (malformedLines > 0) {
-		cerr << "Warning: skipped " << malformedLines << " taxonomy line(s) in " << inF
-			<< " without an identifier, a tab, and a lineage (first at line " << firstMalformedLine << ").\n";
+	const uint64_t lineageCount = header.lineages;
+	if (sizeof header + 4 * header.names + header.nameChars + 4 * header.nameIds + header.subjectChars +
+		7 * lineageCount + 8 * header.slots + sizeof kIndexEnd != size ||
+		header.nameIds > std::numeric_limits<uint32_t>::max() || lineageCount + 1 >= std::numeric_limits<uint32_t>::max()) {
+		return mismatch();
 	}
-	if (extraColumnLines > 0) {
-		cerr << "Warning: ignored columns after the lineage on " << extraColumnLines << " taxonomy line(s) in "
-			<< inF << " (first at line " << firstExtraColumnLine << ").\n";
+
+	vector<uint32_t> nameLengths, ids, subjectLengths;
+	string nameText, subjectText;
+	vector<uint16_t> depths;
+	vector<uint8_t> uncertain;
+	vector<uint64_t> table;
+	char end[sizeof kIndexEnd] = {};
+	if (!readArray(in, nameLengths, header.names) || !readChars(in, nameText, header.nameChars) ||
+		!readArray(in, ids, header.nameIds) || !readChars(in, subjectText, header.subjectChars) ||
+		!readArray(in, subjectLengths, lineageCount) || !readArray(in, depths, lineageCount) ||
+		!readArray(in, uncertain, lineageCount) || !readArray(in, table, header.slots) || !in.read(end, sizeof end) ||
+		std::memcmp(end, kIndexEnd, sizeof end) != 0) {
+		return mismatch();
 	}
-	cout << duplicateSubjects << " of " << duplicateSubjects + uniqueSubjects << " are duplicate entries\n";
-	this->stats();
+
+	uint64_t total = 0;
+	for (const uint32_t length : nameLengths) {
+		if (length == 0) { return mismatch(); }
+		total += length;
+	}
+	if (total != header.nameChars) { return mismatch(); }
+	if (std::any_of(ids.begin(), ids.end(), [&header](uint32_t id) { return id > header.names; })) { return mismatch(); }
+	uint64_t subjectTotal = 0, idTotal = 0;
+	for (uint64_t i = 0; i < lineageCount; ++i) {
+		if (depths[i] > key.depth || uncertain[i] > 1) { return mismatch(); }
+		subjectTotal += subjectLengths[i];
+		idTotal += depths[i];
+	}
+	if (subjectTotal != header.subjectChars || idTotal != header.nameIds) { return mismatch(); }
+	uint64_t filled = 0;
+	for (const uint64_t slot : table) {
+		if ((slot & 0xffffffffu) > lineageCount) { return mismatch(); }
+		filled += slot != 0;
+	}
+	if (table.size() < 16 || (table.size() & (table.size() - 1)) != 0 || table.size() < 2 * lineageCount ||
+		filled != header.uniqueSubjects || header.uniqueSubjects + header.duplicateSubjects != lineageCount) {
+		return mismatch();
+	}
+
+	// The pool may hold other taxonomies' names already, so the index's name IDs are mapped to the pool's.
+	vector<uint32_t> poolIds(nameLengths.size() + 1, 0);
+	size_t offset = 0;
+	for (size_t i = 0; i < nameLengths.size(); ++i) {
+		poolIds[i + 1] = pool.intern(std::string_view(nameText).substr(offset, nameLengths[i]));
+		offset += nameLengths[i];
+	}
+	for (uint32_t& id : ids) { id = poolIds[id]; }
+	nameIds = std::move(ids);
+	subjectChars = std::move(subjectText);
+	lineages.resize(lineageCount);
+	uint64_t subjectOffset = 0;
+	uint32_t firstName = 0;
+	for (uint64_t i = 0; i < lineageCount; ++i) {
+		Lineage& lineage = lineages[i];
+		lineage.subjectOffset = subjectOffset;
+		lineage.subjectLength = subjectLengths[i];
+		lineage.firstName = firstName;
+		lineage.depth = depths[i];
+		lineage.speciesUncertain = uncertain[i] != 0;
+		subjectOffset += subjectLengths[i];
+		firstName += depths[i];
+	}
+	slots = std::move(table);
+	uniqueSubjects = header.uniqueSubjects;
+	duplicateSubjects = header.duplicateSubjects;
+	malformedLines = header.malformedLines;
+	firstMalformedLine = header.firstMalformedLine;
+	extraColumnLines = header.extraColumnLines;
+	firstExtraColumnLine = header.firstExtraColumnLine;
+	cout << "Read taxonomy index " << path << "\n";
+	return true;
+}
+
+// Written to a temporary file that then replaces the index, so that a reader never sees a partial index.
+void RefTax::writeIndex(const string& path, const IndexHeader& key) const {
+	IndexHeader header = key;
+	// Names are numbered by first use, so that the index does not depend on what else the pool holds.
+	vector<uint32_t> localIds(pool.size(), 0), used, ids(nameIds.size());
+	for (size_t i = 0; i < nameIds.size(); ++i) {
+		const uint32_t id = nameIds[i];
+		if (id != 0 && localIds[id] == 0) {
+			used.push_back(id);
+			localIds[id] = static_cast<uint32_t>(used.size());
+		}
+		ids[i] = localIds[id];
+	}
+	vector<uint32_t> nameLengths;
+	nameLengths.reserve(used.size());
+	for (const uint32_t id : used) {
+		nameLengths.push_back(static_cast<uint32_t>(pool.name(id).size()));
+		header.nameChars += pool.name(id).size();
+	}
+	vector<uint32_t> subjectLengths(lineages.size());
+	vector<uint16_t> depths(lineages.size());
+	vector<uint8_t> uncertain(lineages.size());
+	for (size_t i = 0; i < lineages.size(); ++i) {
+		subjectLengths[i] = lineages[i].subjectLength;
+		depths[i] = lineages[i].depth;
+		uncertain[i] = lineages[i].speciesUncertain ? 1 : 0;
+	}
+	header.names = nameLengths.size();
+	header.nameIds = ids.size();
+	header.subjectChars = subjectChars.size();
+	header.lineages = lineages.size();
+	header.slots = slots.size();
+	header.uniqueSubjects = uniqueSubjects;
+	header.duplicateSubjects = duplicateSubjects;
+	header.malformedLines = malformedLines;
+	header.firstMalformedLine = firstMalformedLine;
+	header.extraColumnLines = extraColumnLines;
+	header.firstExtraColumnLine = firstExtraColumnLine;
+
+	const string temporary = path + ".tmp" + to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+	ofstream out(temporary.c_str(), ios::out | ios::binary | ios::trunc);
+	out.write(reinterpret_cast<const char*>(&header), sizeof header);
+	writeArray(out, nameLengths);
+	for (const uint32_t id : used) { out.write(pool.name(id).data(), static_cast<std::streamsize>(pool.name(id).size())); }
+	writeArray(out, ids);
+	out.write(subjectChars.data(), static_cast<std::streamsize>(subjectChars.size()));
+	writeArray(out, subjectLengths);
+	writeArray(out, depths);
+	writeArray(out, uncertain);
+	writeArray(out, slots);
+	out.write(kIndexEnd, sizeof kIndexEnd);
+	out.close();
+	std::error_code error;
+	if (out) { std::filesystem::rename(temporary, path, error); }
+	if (!out || error) {
+		std::filesystem::remove(temporary, error);
+		cerr << "Notice: could not write the taxonomy index " << path << "; the taxonomy is read from its text again "
+			"next time. -no_tax_idx turns the index off.\n";
+		return;
+	}
+	cout << "Wrote taxonomy index " << path << "\n";
 }
 
 void RefTax::mergeBlock(ParsedBlock& block) {

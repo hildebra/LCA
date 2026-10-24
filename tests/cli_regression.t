@@ -384,6 +384,29 @@ subtest 'malformed taxonomy lines are skipped' => sub {
 	}
 };
 
+subtest 'taxonomy index is written, read and rebuilt' => sub {
+	my $f = fixture();
+	my $index = "$f->{taxonomy}.idx";
+	my ($out) = run_lca($f);
+	like($out, qr/Wrote taxonomy index \Q$index\E/, 'the first run writes the index');
+	ok(-s $index, 'index beside the taxonomy');
+	my $first = slurp($f->{output});
+	($out) = run_lca($f);
+	like($out, qr/Read taxonomy index/, 'the next run reads it');
+	is(slurp($f->{output}), $first, 'same output');
+	spew($f->{taxonomy}, "a\t" . sprintf($LINEAGE, 'gamma2') . "\n");
+	($out) = run_lca($f);
+	like($out, qr/does not match.*rebuilding it/, 'a changed taxonomy rebuilds the index');
+	is(rows($f)->[1][-1], 'Genus gamma2', 'the changed taxonomy is used');
+	run_lca($f, output => $index, expected => 29);
+	ok(-s $index, 'an output may not overwrite the index');
+
+	my $g = fixture();
+	($out) = run_lca($g, args => ['-no_tax_idx']);
+	ok(!-e "$g->{taxonomy}.idx" && $out !~ /index/, '-no_tax_idx neither writes nor reads an index');
+	run_lca($g, output => "$g->{taxonomy}.idx", args => ['-no_tax_idx']);
+};
+
 subtest 'thread option is accepted silently' => sub {
 	my $f = fixture();
 	my (undef, $err) = run_lca($f, args => ['-t', 4]);
