@@ -1004,6 +1004,49 @@ void library() {
 	check(heapAllocations == allocations, "Assign must not allocate once its scratch has grown");
 }
 
+// GTDB appends capital letters after an underscore (_A, _AB, _CF); they are never placeholder markers, while the
+// lower case markers of PR2 and NCBI names are.
+void gtdbSuffixes() {
+	currentGroup = "GTDB suffixes";
+	check(lca::kNamingRulesVersion == 2, "the naming rules version must be raised for the GTDB suffix rule");
+	const char* certain[] = {"Streptococcus mitis_CF", "Streptococcus oralis_CF", "Bacillus_CF chungangensis",
+		"Prevotella copri_A", "Bacillus_A cereus_AB", "Collinsella sp900762015", "Escherichia coli",
+		"Foo bar_SP", "Foo_AFF baz", "Foo bar_SPP"};
+	for (const char* name : certain) {
+		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false, testNames);
+		check(!lca::species_name_is_placeholder(name) && !tax.speciesUncertain,
+			(std::string("a GTDB name must not be a placeholder: ") + name).c_str());
+	}
+	const char* placeholders[] = {"Streptococcus sp.", "Streptococcus sp. X1", "Lachnospiraceae bacterium",
+		"Pichia sp. NRRL Y-12824", "Pichia_sp._NRRL_Y-12824", "Sordariomycetes_sp.", "Candida cf. albicans",
+		"Candida_cf._albicans", "Mockella aff. alpha", "uncultured bacterium",
+		"Foo_SP bar_sp", "Foo_CF_cf baz", "SP bar", "Foo_BACTERIUM"};
+	for (const char* name : placeholders) {
+		TaxObj tax(std::string("k__Bacteria;g__G;s__") + name, 7, false, false, testNames);
+		check(lca::species_name_is_placeholder(name) && tax.speciesUncertain,
+			(std::string("a placeholder name must stay a placeholder: ") + name).c_str());
+	}
+	check(!lca::species_name_is_placeholder("") && !lca::species_name_is_placeholder("_CF") &&
+		!lca::species_name_is_placeholder("Genus_") && lca::species_name_is_placeholder("sp"),
+		"empty names and a lone suffix must not be placeholders");
+
+	const std::string family = "d__Bacteria;p__Bacillota;c__Bacilli;o__Lactobacillales;f__Streptococcaceae;g__Streptococcus;";
+	lca::Taxonomy t;
+	t.AddLineage(family + "s__Streptococcus mitis_CF");  // 0
+	t.AddLineage(family + "s__Streptococcus oralis");    // 1
+	check(!t.SpeciesUncertain(0) && !t.SpeciesUncertain(1), "S. mitis_CF must be a certain species");
+	const lca::Options opt;
+	lca::Scratch s;
+	std::vector<lca::Hit> hits = {libraryHit(0, 99), libraryHit(1, 99)};
+	lca::Assignment a = lca::Assign(hits, t, opt, s);
+	check(a.depth == 6 && libraryLineage(a, t).ends_with(";Streptococcus") && !a.species_uncertain,
+		"two certain species at one identity must give the genus, not S. oralis");
+	hits = {libraryHit(0, 99)};
+	a = lca::Assign(hits, t, opt, s);
+	check(a.depth == 7 && libraryLineage(a, t).ends_with(";Streptococcus mitis_CF") && !a.species_uncertain,
+		"a single hit on S. mitis_CF must name it, as certain");
+}
+
 BlastRes subjectHit(int subject, double identity, int alignmentLength, int queryStop, int queryLength) {
 	const std::string id = "s" + std::to_string(subject);
 	if (queryLength > 0) { return hit("q", id.c_str(), identity, alignmentLength, queryStop, queryLength); }
@@ -1381,6 +1424,7 @@ int main() {
 	matrixCounts();
 	emptyConversion();
 	library();
+	gtdbSuffixes();
 	libraryMatchesProgram();
 	taxonomyParts();
 

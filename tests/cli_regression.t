@@ -357,6 +357,21 @@ subtest 'placeholder species and unknown rank names' => sub {
 	is_deeply(tail_fields($rows[2], 2), ['?', '?'], 'unknown and unidentified are missing names');
 };
 
+subtest 'GTDB suffixes are not placeholder markers' => sub {
+	my $f = fixture();
+	my $genus = 'k__Bacteria;p__Bacillota;c__Bacilli;o__Lactobacillales;f__Streptococcaceae;g__Streptococcus';
+	spew($f->{taxonomy}, "m\t$genus;s__Streptococcus mitis_CF\no\t$genus;s__Streptococcus oralis\n"
+		. "c\t$genus;s__Streptococcus cf. mitis\n");
+	spew($f->{mapping}, hit(query => 'two_certain', subject => 'm') . hit(query => 'two_certain', subject => 'o')
+		. hit(query => 'alone', subject => 'm') . hit(query => 'cf_vs_certain', subject => 'c')
+		. hit(query => 'cf_vs_certain', subject => 'o'));
+	run_lca($f);
+	my @rows = @{rows($f)}[1 .. 3];
+	is_deeply(tail_fields($rows[0], 2), ['Streptococcus', '?'], 'two certain species give the genus');
+	is_deeply(tail_fields($rows[1], 2), ['Streptococcus', 'Streptococcus mitis_CF'], 'a _CF species is named alone');
+	is_deeply(tail_fields($rows[2], 2), ['Streptococcus', 'Streptococcus oralis'], 'a cf. species still abstains');
+};
+
 subtest 'taxonomy columns after the lineage are ignored' => sub {
 	my $f = fixture();
 	spew($f->{taxonomy}, "a\t" . sprintf($LINEAGE, 'alpha') . "\textra_column\nb\t" . sprintf($LINEAGE, 'beta') . "\t\n");

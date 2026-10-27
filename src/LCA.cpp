@@ -38,7 +38,11 @@
 //0.36: 24.10.26: a taxonomy index (-r file + .idx) is written beside each taxonomy and read instead of the text
 //while the taxonomy file and the settings that shape it are unchanged; -no_tax_idx turns it off;
 //output is identical to 0.35.
-const char* LCA_ver = "0.36";
+//0.37: 27.10.26: a GTDB suffix (underscore and capital letters, e.g. Streptococcus mitis_CF) is no longer read as
+//the placeholder marker cf, sp, spp or aff (kNamingRulesVersion 2: older taxonomy indexes are rebuilt); the three
+//GTDB r226 species Bacillus_CF chungangensis, Streptococcus mitis_CF and S. oralis_CF are certain species now;
+//everything else is identical to 0.36.
+const char* LCA_ver = "0.37";
 
 namespace {
 bool samePath(const string& first, const string& second) {

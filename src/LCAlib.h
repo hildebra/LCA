@@ -45,7 +45,7 @@ inline constexpr double kRelativeCover = 0.85; // rule 3: of the anchor's query 
 // Raise it whenever a subject's names could come out differently for the same input: is_unknown_taxon_name's list,
 // species_name_is_placeholder, storeRankName (species shortened to two words, Candidatus to three), Add's trimming,
 // parseLineage's rank prefixes. Saved TaxonomyParts of another version must be rebuilt from the lineage text.
-inline constexpr int kNamingRulesVersion = 1;
+inline constexpr int kNamingRulesVersion = 2;
 
 //*******************************************************
 //        Taxonomy names
@@ -97,12 +97,23 @@ inline bool is_name_separator(char c) {
 	return c == '_' || std::isspace(static_cast<unsigned char>(c));
 }
 
+// A word of capital letters only.
+inline bool is_all_capitals(std::string_view word) {
+	for (const char c : word) {
+		if (c < 'A' || c > 'Z') { return false; }
+	}
+	return !word.empty();
+}
+
 // Species names that do not identify a species, e.g. "Genus sp. X", "Lachnospiraceae bacterium 3_1",
-// "gut metagenome". Markers must be whole words; spaces and underscores separate words.
+// "gut metagenome". Markers must be whole words; spaces and underscores separate words. A word of capitals after an
+// underscore is a GTDB suffix ("Bacillus_CF chungangensis", "Prevotella copri_A"), not an abbreviation marker, while
+// PR2 and NCBI names have lower case markers ("Candida_cf._albicans").
 inline bool species_name_is_placeholder(std::string_view value) {
+	static const char* const abbreviations[] = { "sp", "sp.", "spp", "spp.", "cf", "cf.", "aff", "aff." };
 	static const char* const markers[] = {
-		"sp", "sp.", "spp", "spp.", "cf", "cf.", "aff", "aff.", "bacterium", "archaeon", "metagenome",
-		"unidentified", "unknown", "environmental", "uncultured", "unclassified", "incertae"
+		"bacterium", "archaeon", "metagenome", "unidentified", "unknown", "environmental", "uncultured", "unclassified",
+		"incertae"
 	};
 	if (istarts_with_ascii(value, "uncultured") || istarts_with_ascii(value, "unclassified")) {
 		return true;
@@ -114,6 +125,12 @@ inline bool species_name_is_placeholder(std::string_view value) {
 		while (end < value.size() && !is_name_separator(value[end])) { ++end; }
 		if (end > begin) {
 			const std::string_view word = value.substr(begin, end - begin);
+			const bool gtdbSuffix = begin > 0 && value[begin - 1] == '_' && is_all_capitals(word);
+			if (!gtdbSuffix) {
+				for (const char* abbreviation : abbreviations) {
+					if (iequals_ascii(word, abbreviation)) { return true; }
+				}
+			}
 			for (const char* marker : markers) {
 				if (iequals_ascii(word, marker)) { return true; }
 			}
